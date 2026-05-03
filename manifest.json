@@ -1,0 +1,10 @@
+{
+  "id": "philosophy-reader",
+  "name": "Philosophy Reader",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Import academic PDFs and precompute context-aware hover glossary explanations.",
+  "author": "",
+  "authorUrl": "",
+  "isDesktopOnly": true
+}

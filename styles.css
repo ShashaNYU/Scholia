@@ -1,0 +1,42 @@
+.philosophy-reader-tooltip {
+  max-width: 420px;
+  padding: 10px 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-primary);
+  color: var(--text-normal);
+  box-shadow: var(--shadow-s);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.philosophy-reader-tooltip h4 {
+  margin: 0 0 6px;
+  font-size: 14px;
+  line-height: 1.3;
+}
+
+.philosophy-reader-tooltip p {
+  margin: 6px 0;
+}
+
+.philosophy-reader-tooltip .philosophy-reader-label {
+  margin-top: 8px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.philosophy-reader-tooltip .philosophy-reader-empty {
+  color: var(--text-muted);
+}
+
+.philosophy-reader-tooltip button {
+  margin-top: 8px;
+}
+
+.philosophy-reader-progress {
+  color: var(--text-muted);
+}
