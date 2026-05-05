@@ -5,7 +5,7 @@ import termDiscoveryPrompt from "../prompts/term-discovery.md";
 import { parseJsonFromText, parseLooseJsonFromText, type ContextCluster, type ParagraphWindow, type TermCandidate } from "./core.js";
 
 export type ProviderName = "openai" | "anthropic";
-export type PdfImportBackend = "pdfjs" | "marker";
+export type PdfImportBackend = "pdfjs" | "markitdown" | "marker";
 
 export interface PhilosophyReaderSettings {
   provider: ProviderName;
@@ -14,6 +14,7 @@ export interface PhilosophyReaderSettings {
   openaiModel: string;
   anthropicModel: string;
   pdfImportBackend: PdfImportBackend;
+  markitdownCommand: string;
   markerCommand: string;
   maxPrecomputedTerms: number;
   glossaryFolderName: string;

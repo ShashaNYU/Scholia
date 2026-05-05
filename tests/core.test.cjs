@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const {
+  analyzeMarkdownQuality,
   buildContextClusters,
   buildGlossaryMarkdown,
   buildParagraphWindows,
@@ -195,4 +196,12 @@ test("findWordAtPosition ignores short words", () => {
     from: 4,
     to: 11
   });
+});
+
+test("analyzeMarkdownQuality flags formula extraction failures", () => {
+  const report = analyzeMarkdownQuality("The K axiom: (cid:3)(φ→ψ) and $\\boxed { \\phi }$");
+  assert.equal(report.cidRefs, 1);
+  assert.equal(report.boxedFormulaMarks, 1);
+  assert.ok(report.suspiciousFormulaMarks >= 2);
+  assert.notEqual(report.riskLevel, "ok");
 });

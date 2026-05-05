@@ -560,7 +560,74 @@ function findWordAtPosition(lineText, position) {
   return { word, from, to };
 }
 
+function analyzeMarkdownQuality(markdown) {
+  const text = String(markdown || "");
+  const lines = text.split(/\r?\n/);
+  const controlChars = (text.match(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g) || []).length;
+  const mojibakeMarks = (text.match(/(?:â.|Ã.|Â.|ð|Ñ|ă|ĺ|ď|§|¶)/g) || []).length;
+  const replacementChars = (text.match(/\uFFFD/g) || []).length;
+  const cidRefs = (text.match(/\(cid:\d+\)/g) || []).length;
+  const boxedFormulaMarks = (text.match(/\\boxed\s*\{/g) || []).length;
+  const suspiciousFormulaMarks = (text.match(/\b6=|ConT p|gp\(|Ñ|ðñ|\(cid:\d+\)|\\boxed\s*\{/g) || []).length;
+  const mathSymbols = (text.match(/[□◇◻⊢⊨→↔¬∧∨∀∃λβηφψΓΣ≤≥≠∈∉⊂⊆⊥]/g) || []).length;
+  const longAlphaRuns = (text.match(/[A-Za-z]{24,}/g) || []).length;
+  const markdownTableLines = lines.filter((line) => /^\s*\|.*\|\s*$/.test(line)).length;
+  const nonEmptyLines = lines.filter((line) => line.trim());
+  const avgLineLength = nonEmptyLines.length
+    ? Math.round(nonEmptyLines.reduce((sum, line) => sum + line.length, 0) / nonEmptyLines.length)
+    : 0;
+
+  const warnings = [];
+  if (cidRefs > 0) {
+    warnings.push(`${cidRefs} PDF CID placeholder(s), often failed math or symbol extraction.`);
+  }
+  if (boxedFormulaMarks > 0) {
+    warnings.push(`${boxedFormulaMarks} \\boxed{...} expression(s); verify modal boxes were not misread as boxing notation.`);
+  }
+  if (controlChars > 0) {
+    warnings.push(`${controlChars} control character(s), often failed TeX symbol extraction.`);
+  }
+  if (mojibakeMarks > 0 || replacementChars > 0) {
+    warnings.push(`${mojibakeMarks + replacementChars} encoding anomaly marker(s).`);
+  }
+  if (longAlphaRuns > 0) {
+    warnings.push(`${longAlphaRuns} long unspaced alphabetic run(s), often layout or word-boundary loss.`);
+  }
+  if (markdownTableLines > 30) {
+    warnings.push(`${markdownTableLines} Markdown table-like line(s), often layout fragments in prose PDFs.`);
+  }
+
+  const riskScore = cidRefs * 4
+    + boxedFormulaMarks * 3
+    + controlChars * 4
+    + mojibakeMarks * 2
+    + replacementChars * 4
+    + suspiciousFormulaMarks * 2
+    + Math.min(longAlphaRuns, 50)
+    + Math.min(markdownTableLines, 100);
+  const riskLevel = riskScore >= 80 ? "high" : riskScore >= 20 ? "medium" : warnings.length > 0 ? "low" : "ok";
+
+  return {
+    chars: text.length,
+    lines: text ? lines.length : 0,
+    controlChars,
+    mojibakeMarks,
+    replacementChars,
+    cidRefs,
+    boxedFormulaMarks,
+    mathSymbols,
+    suspiciousFormulaMarks,
+    longAlphaRuns,
+    markdownTableLines,
+    avgLineLength,
+    riskScore,
+    riskLevel,
+    warnings
+  };
+}
+
 module.exports = {
+  analyzeMarkdownQuality,
   buildContextClusters,
   buildGlossaryMarkdown,
   buildParagraphWindows,

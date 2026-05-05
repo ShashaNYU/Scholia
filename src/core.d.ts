@@ -52,6 +52,25 @@ export interface GlossaryEntry {
   sep_enabled?: boolean;
 }
 
+export interface MarkdownQualityReport {
+  chars: number;
+  lines: number;
+  controlChars: number;
+  mojibakeMarks: number;
+  replacementChars: number;
+  cidRefs: number;
+  boxedFormulaMarks: number;
+  mathSymbols: number;
+  suspiciousFormulaMarks: number;
+  longAlphaRuns: number;
+  markdownTableLines: number;
+  avgLineLength: number;
+  riskScore: number;
+  riskLevel: "ok" | "low" | "medium" | "high";
+  warnings: string[];
+}
+
+export function analyzeMarkdownQuality(markdown: string): MarkdownQualityReport;
 export function buildContextClusters(markdown: string, paragraphs: Paragraph[], termCandidate: TermCandidate, maxClusters?: number): ContextCluster[];
 export function buildGlossaryMarkdown(entry: Partial<GlossaryEntry> & { term: string }): string;
 export function buildParagraphWindows(paragraphs: Paragraph[], size?: number, overlap?: number): ParagraphWindow[];

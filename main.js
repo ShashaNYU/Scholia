@@ -541,7 +541,61 @@ ${usageNotes}
       }
       return { word, from, to };
     }
+    function analyzeMarkdownQuality2(markdown) {
+      const text = String(markdown || "");
+      const lines = text.split(/\r?\n/);
+      const controlChars = (text.match(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g) || []).length;
+      const mojibakeMarks = (text.match(/(?:â.|Ã.|Â.|ð|Ñ|ă|ĺ|ď|§|¶)/g) || []).length;
+      const replacementChars = (text.match(/\uFFFD/g) || []).length;
+      const cidRefs = (text.match(/\(cid:\d+\)/g) || []).length;
+      const boxedFormulaMarks = (text.match(/\\boxed\s*\{/g) || []).length;
+      const suspiciousFormulaMarks = (text.match(/\b6=|ConT p|gp\(|Ñ|ðñ|\(cid:\d+\)|\\boxed\s*\{/g) || []).length;
+      const mathSymbols = (text.match(/[□◇◻⊢⊨→↔¬∧∨∀∃λβηφψΓΣ≤≥≠∈∉⊂⊆⊥]/g) || []).length;
+      const longAlphaRuns = (text.match(/[A-Za-z]{24,}/g) || []).length;
+      const markdownTableLines = lines.filter((line) => /^\s*\|.*\|\s*$/.test(line)).length;
+      const nonEmptyLines = lines.filter((line) => line.trim());
+      const avgLineLength = nonEmptyLines.length ? Math.round(nonEmptyLines.reduce((sum, line) => sum + line.length, 0) / nonEmptyLines.length) : 0;
+      const warnings = [];
+      if (cidRefs > 0) {
+        warnings.push(`${cidRefs} PDF CID placeholder(s), often failed math or symbol extraction.`);
+      }
+      if (boxedFormulaMarks > 0) {
+        warnings.push(`${boxedFormulaMarks} \\boxed{...} expression(s); verify modal boxes were not misread as boxing notation.`);
+      }
+      if (controlChars > 0) {
+        warnings.push(`${controlChars} control character(s), often failed TeX symbol extraction.`);
+      }
+      if (mojibakeMarks > 0 || replacementChars > 0) {
+        warnings.push(`${mojibakeMarks + replacementChars} encoding anomaly marker(s).`);
+      }
+      if (longAlphaRuns > 0) {
+        warnings.push(`${longAlphaRuns} long unspaced alphabetic run(s), often layout or word-boundary loss.`);
+      }
+      if (markdownTableLines > 30) {
+        warnings.push(`${markdownTableLines} Markdown table-like line(s), often layout fragments in prose PDFs.`);
+      }
+      const riskScore = cidRefs * 4 + boxedFormulaMarks * 3 + controlChars * 4 + mojibakeMarks * 2 + replacementChars * 4 + suspiciousFormulaMarks * 2 + Math.min(longAlphaRuns, 50) + Math.min(markdownTableLines, 100);
+      const riskLevel = riskScore >= 80 ? "high" : riskScore >= 20 ? "medium" : warnings.length > 0 ? "low" : "ok";
+      return {
+        chars: text.length,
+        lines: text ? lines.length : 0,
+        controlChars,
+        mojibakeMarks,
+        replacementChars,
+        cidRefs,
+        boxedFormulaMarks,
+        mathSymbols,
+        suspiciousFormulaMarks,
+        longAlphaRuns,
+        markdownTableLines,
+        avgLineLength,
+        riskScore,
+        riskLevel,
+        warnings
+      };
+    }
     module2.exports = {
+      analyzeMarkdownQuality: analyzeMarkdownQuality2,
       buildContextClusters: buildContextClusters2,
       buildGlossaryMarkdown: buildGlossaryMarkdown2,
       buildParagraphWindows: buildParagraphWindows2,
@@ -98764,7 +98818,8 @@ var DEFAULT_SETTINGS = {
   anthropicApiKey: "",
   openaiModel: "gpt-5.4-mini",
   anthropicModel: "claude-sonnet-4-6",
-  pdfImportBackend: "pdfjs",
+  pdfImportBackend: "markitdown",
+  markitdownCommand: "markitdown",
   markerCommand: "marker_single",
   maxPrecomputedTerms: 40,
   glossaryFolderName: "_glossary",
@@ -98848,6 +98903,10 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
     const pluginPath = this.getPluginDiskPath();
     return pluginPath ? path.join(pluginPath, ".venv", "bin", "marker_single") : null;
   }
+  getLocalMarkitdownCommand() {
+    const pluginPath = this.getPluginDiskPath();
+    return pluginPath ? path.join(pluginPath, ".eval-venv", "bin", "markitdown") : null;
+  }
   getPluginDiskPath() {
     const adapter = this.app.vault.adapter;
     const pluginDir = this.manifest.dir;
@@ -98857,11 +98916,16 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
     return path.join(adapter.getBasePath(), pluginDir);
   }
   migrateStaleImportSettings() {
-    const command = this.settings.markerCommand || "";
-    const pointsAtDeletedLocalMarker = command.includes(`${path.sep}.venv${path.sep}bin${path.sep}marker_single`) && !fs.existsSync(command);
+    const markerCommand = this.settings.markerCommand || "";
+    const pointsAtDeletedLocalMarker = markerCommand.includes(`${path.sep}.venv${path.sep}bin${path.sep}marker_single`) && !fs.existsSync(markerCommand);
     if (pointsAtDeletedLocalMarker) {
       this.settings.pdfImportBackend = "pdfjs";
       this.settings.markerCommand = DEFAULT_SETTINGS.markerCommand;
+      void this.saveSettings();
+    }
+    const localMarkitdown = this.getLocalMarkitdownCommand();
+    if (this.settings.markitdownCommand === DEFAULT_SETTINGS.markitdownCommand && localMarkitdown && fs.existsSync(localMarkitdown)) {
+      this.settings.markitdownCommand = localMarkitdown;
       void this.saveSettings();
     }
   }
@@ -98965,6 +99029,10 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
         new import_obsidian2.Notice("Set the Marker CLI path in Philosophy Reader settings first.");
         return;
       }
+      if (this.settings.pdfImportBackend === "markitdown" && !this.settings.markitdownCommand.trim()) {
+        new import_obsidian2.Notice("Set the MarkItDown CLI path in Philosophy Reader settings first.");
+        return;
+      }
       const adapter = this.app.vault.adapter;
       if (!(adapter instanceof import_obsidian2.FileSystemAdapter)) {
         new import_obsidian2.Notice("PDF import requires a local filesystem vault.");
@@ -98994,7 +99062,7 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
       await this.ensureFolder(joinVaultPath(paperFolder, this.settings.glossaryFolderName));
       await this.ensureFolder(joinVaultPath(paperFolder, "_source"));
       const pdfAbsPath = adapter.getFullPath(pdfTarget);
-      const importedMarkdown = this.settings.pdfImportBackend === "marker" ? await this.convertPdfWithMarker(pdfAbsPath, paperFolder, adapter) : await this.convertDigitalPdfWithPdfJs(pdfAbsPath, paperFolder, baseName, pdfTarget);
+      const importedMarkdown = this.settings.pdfImportBackend === "marker" ? await this.convertPdfWithMarker(pdfAbsPath, paperFolder, adapter) : this.settings.pdfImportBackend === "markitdown" ? await this.convertPdfWithMarkitdown(pdfAbsPath, paperFolder, baseName, pdfTarget, adapter) : await this.convertDigitalPdfWithPdfJs(pdfAbsPath, paperFolder, baseName, pdfTarget);
       const paperMarkdown = buildImportedPaperMarkdown(importedMarkdown, {
         title: baseName,
         sourcePdf: pdfTarget,
@@ -99032,6 +99100,63 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
 `
     );
     return buildMarkdownFromExtractedPdfText(extracted, paperTitle);
+  }
+  async convertPdfWithMarkitdown(pdfAbsPath, paperFolder, paperTitle, sourcePdfPath, adapter) {
+    this.setStatus("Philosophy Reader: converting PDF with MarkItDown...");
+    new import_obsidian2.Notice("Converting PDF with MarkItDown...");
+    const outputDir = path.join(adapter.getFullPath(paperFolder), ".markitdown-output");
+    if (fs.existsSync(outputDir)) {
+      fs.rmSync(outputDir, { recursive: true, force: true });
+    }
+    fs.mkdirSync(outputDir, { recursive: true });
+    const outputPath = path.join(outputDir, "markitdown.md");
+    const logPath = path.join(outputDir, "import.log");
+    const markitdownArgs = [
+      pdfAbsPath,
+      "-o",
+      outputPath
+    ];
+    try {
+      const result = await execFileAsync(this.settings.markitdownCommand, markitdownArgs, {
+        maxBuffer: 1024 * 1024 * 80
+      });
+      fs.writeFileSync(logPath, formatMarkerLog(this.settings.markitdownCommand, markitdownArgs, result.stdout, result.stderr), "utf8");
+    } catch (error) {
+      const execError = error;
+      fs.writeFileSync(logPath, formatMarkerLog(this.settings.markitdownCommand, markitdownArgs, execError.stdout || "", execError.stderr || toErrorMessage(error)), "utf8");
+      throw new Error(`MarkItDown conversion failed. See ${logPath}`);
+    }
+    if (!fs.existsSync(outputPath)) {
+      throw new Error("MarkItDown finished without producing a markdown file.");
+    }
+    const importedMarkdown = fs.readFileSync(outputPath, "utf8").trim();
+    if (importedMarkdown.replace(/\s/g, "").length < 800) {
+      throw new Error("MarkItDown found very little selectable text. This PDF may need OCR.");
+    }
+    const quality = (0, import_core2.analyzeMarkdownQuality)(importedMarkdown);
+    await this.writeVaultTextFile(joinVaultPath(paperFolder, "_source", "markitdown.md"), `${importedMarkdown}
+`);
+    await this.writeVaultTextFile(
+      joinVaultPath(paperFolder, "_source", "import-quality.json"),
+      `${JSON.stringify({
+        backend: "markitdown",
+        command: this.settings.markitdownCommand,
+        paperTitle,
+        sourcePdf: sourcePdfPath,
+        importedAt: (/* @__PURE__ */ new Date()).toISOString(),
+        quality
+      }, null, 2)}
+`
+    );
+    await this.writeVaultTextFile(
+      joinVaultPath(paperFolder, "_source", "import-warnings.md"),
+      buildImportWarningsMarkdown("MarkItDown", sourcePdfPath, quality)
+    );
+    fs.rmSync(outputDir, { recursive: true, force: true });
+    if (quality.riskLevel === "high" || quality.riskLevel === "medium") {
+      new import_obsidian2.Notice(`PDF imported with ${quality.riskLevel} extraction risk. Check _source/import-warnings.md before trusting formulas.`);
+    }
+    return importedMarkdown;
   }
   async convertPdfWithMarker(pdfAbsPath, paperFolder, adapter) {
     this.setStatus("Philosophy Reader: converting PDF with Marker...");
@@ -99347,10 +99472,24 @@ var PhilosophyReaderSettingTab = class extends import_obsidian2.PluginSettingTab
     containerEl.empty();
     containerEl.createEl("h2", { text: "Philosophy Reader" });
     containerEl.createEl("h3", { text: "PDF import" });
-    new import_obsidian2.Setting(containerEl).setName("PDF import backend").setDesc("PDF.js is the lightweight default for selectable-text PDFs. Marker is optional.").addDropdown((dropdown) => dropdown.addOption("pdfjs", "PDF.js text extraction").addOption("marker", "Marker CLI").setValue(this.plugin.settings.pdfImportBackend).onChange(async (value) => {
-      const backend = value === "marker" ? "marker" : "pdfjs";
+    new import_obsidian2.Setting(containerEl).setName("PDF import backend").setDesc("MarkItDown is the default digital-PDF path. PDF.js is a lightweight fallback; Marker is optional.").addDropdown((dropdown) => dropdown.addOption("markitdown", "MarkItDown CLI").addOption("pdfjs", "PDF.js text extraction").addOption("marker", "Marker CLI").setValue(this.plugin.settings.pdfImportBackend).onChange(async (value) => {
+      const backend = value === "marker" ? "marker" : value === "pdfjs" ? "pdfjs" : "markitdown";
       this.plugin.settings.pdfImportBackend = backend;
       await this.plugin.saveSettings();
+    }));
+    new import_obsidian2.Setting(containerEl).setName("MarkItDown CLI path").setDesc("Used when the backend is MarkItDown CLI. Outputs quality warnings under _source/.").addText((text) => text.setPlaceholder("markitdown").setValue(this.plugin.settings.markitdownCommand).onChange(async (value) => {
+      this.plugin.settings.markitdownCommand = value.trim();
+      await this.plugin.saveSettings();
+    })).addButton((button) => button.setButtonText("Use local MarkItDown").onClick(async () => {
+      const localCommand = this.plugin.getLocalMarkitdownCommand();
+      if (!localCommand || !fs.existsSync(localCommand)) {
+        new import_obsidian2.Notice("Local markitdown was not found in this plugin's .eval-venv.");
+        return;
+      }
+      this.plugin.settings.markitdownCommand = localCommand;
+      await this.plugin.saveSettings();
+      this.display();
+      new import_obsidian2.Notice("MarkItDown CLI path set to local markitdown.");
     }));
     new import_obsidian2.Setting(containerEl).setName("Marker CLI path").setDesc("Optional. Only used when the backend is Marker CLI.").addText((text) => text.setPlaceholder("marker_single").setValue(this.plugin.settings.markerCommand).onChange(async (value) => {
       this.plugin.settings.markerCommand = value.trim();
@@ -99545,6 +99684,52 @@ function buildImportedPaperMarkdown(markdown, metadata) {
     ""
   ].join("\n");
   return `${frontmatter}${content}
+`;
+}
+function buildImportWarningsMarkdown(backend, sourcePdfPath, quality) {
+  const lines = [
+    "---",
+    `backend: ${JSON.stringify(backend)}`,
+    `source_pdf: ${JSON.stringify(sourcePdfPath)}`,
+    `risk_level: ${JSON.stringify(quality.riskLevel)}`,
+    `risk_score: ${quality.riskScore}`,
+    `updated: ${JSON.stringify((/* @__PURE__ */ new Date()).toISOString())}`,
+    "---",
+    "",
+    "# PDF import warnings",
+    "",
+    `Backend: ${backend}`,
+    `Source PDF: [[${sourcePdfPath}]]`,
+    `Risk: ${quality.riskLevel} (${quality.riskScore})`,
+    "",
+    "## Counters",
+    "",
+    `- CID placeholders: ${quality.cidRefs}`,
+    `- Boxed formula marks: ${quality.boxedFormulaMarks}`,
+    `- Control characters: ${quality.controlChars}`,
+    `- Encoding anomalies: ${quality.mojibakeMarks + quality.replacementChars}`,
+    `- Suspicious formula marks: ${quality.suspiciousFormulaMarks}`,
+    `- Long unspaced alphabetic runs: ${quality.longAlphaRuns}`,
+    `- Markdown table-like lines: ${quality.markdownTableLines}`,
+    "",
+    "## Warnings",
+    ""
+  ];
+  if (quality.warnings.length === 0) {
+    lines.push("- No automatic warnings.");
+  } else {
+    lines.push(...quality.warnings.map((warning) => `- ${warning}`));
+  }
+  lines.push(
+    "",
+    "## Interpretation",
+    "",
+    "- Ordinary prose may still be readable when risk is medium or high.",
+    "- Do not trust formulas until CID placeholders, modal boxes, arrows, Greek letters, and subscripts have been spot-checked.",
+    "- The next fallback stage should target only risky pages or formula regions, not OCR the whole PDF by default.",
+    ""
+  );
+  return `${lines.join("\n")}
 `;
 }
 function findLargestMarkdownFile(folder) {

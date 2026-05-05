@@ -16,6 +16,7 @@ import {
   normalizePath
 } from "obsidian";
 import {
+  analyzeMarkdownQuality,
   buildContextClusters,
   buildGlossaryMarkdown,
   buildParagraphWindows,
@@ -33,6 +34,7 @@ import {
   splitParagraphs,
   type ContextCluster,
   type GlossaryEntry,
+  type MarkdownQualityReport,
   type TermCandidate
 } from "./core.js";
 import {
@@ -55,7 +57,8 @@ const DEFAULT_SETTINGS: PhilosophyReaderSettings = {
   anthropicApiKey: "",
   openaiModel: "gpt-5.4-mini",
   anthropicModel: "claude-sonnet-4-6",
-  pdfImportBackend: "pdfjs",
+  pdfImportBackend: "markitdown",
+  markitdownCommand: "markitdown",
   markerCommand: "marker_single",
   maxPrecomputedTerms: 40,
   glossaryFolderName: "_glossary",
@@ -157,6 +160,11 @@ export default class PhilosophyReaderPlugin extends Plugin {
     return pluginPath ? path.join(pluginPath, ".venv", "bin", "marker_single") : null;
   }
 
+  getLocalMarkitdownCommand(): string | null {
+    const pluginPath = this.getPluginDiskPath();
+    return pluginPath ? path.join(pluginPath, ".eval-venv", "bin", "markitdown") : null;
+  }
+
   private getPluginDiskPath(): string | null {
     const adapter = this.app.vault.adapter;
     const pluginDir = this.manifest.dir;
@@ -168,11 +176,17 @@ export default class PhilosophyReaderPlugin extends Plugin {
   }
 
   private migrateStaleImportSettings(): void {
-    const command = this.settings.markerCommand || "";
-    const pointsAtDeletedLocalMarker = command.includes(`${path.sep}.venv${path.sep}bin${path.sep}marker_single`) && !fs.existsSync(command);
+    const markerCommand = this.settings.markerCommand || "";
+    const pointsAtDeletedLocalMarker = markerCommand.includes(`${path.sep}.venv${path.sep}bin${path.sep}marker_single`) && !fs.existsSync(markerCommand);
     if (pointsAtDeletedLocalMarker) {
       this.settings.pdfImportBackend = "pdfjs";
       this.settings.markerCommand = DEFAULT_SETTINGS.markerCommand;
+      void this.saveSettings();
+    }
+
+    const localMarkitdown = this.getLocalMarkitdownCommand();
+    if (this.settings.markitdownCommand === DEFAULT_SETTINGS.markitdownCommand && localMarkitdown && fs.existsSync(localMarkitdown)) {
+      this.settings.markitdownCommand = localMarkitdown;
       void this.saveSettings();
     }
   }
@@ -298,6 +312,10 @@ export default class PhilosophyReaderPlugin extends Plugin {
         new Notice("Set the Marker CLI path in Philosophy Reader settings first.");
         return;
       }
+      if (this.settings.pdfImportBackend === "markitdown" && !this.settings.markitdownCommand.trim()) {
+        new Notice("Set the MarkItDown CLI path in Philosophy Reader settings first.");
+        return;
+      }
 
       const adapter = this.app.vault.adapter;
       if (!(adapter instanceof FileSystemAdapter)) {
@@ -338,6 +356,8 @@ export default class PhilosophyReaderPlugin extends Plugin {
       const pdfAbsPath = adapter.getFullPath(pdfTarget);
       const importedMarkdown = this.settings.pdfImportBackend === "marker"
         ? await this.convertPdfWithMarker(pdfAbsPath, paperFolder, adapter)
+        : this.settings.pdfImportBackend === "markitdown"
+          ? await this.convertPdfWithMarkitdown(pdfAbsPath, paperFolder, baseName, pdfTarget, adapter)
         : await this.convertDigitalPdfWithPdfJs(pdfAbsPath, paperFolder, baseName, pdfTarget);
       const paperMarkdown = buildImportedPaperMarkdown(importedMarkdown, {
         title: baseName,
@@ -386,6 +406,74 @@ export default class PhilosophyReaderPlugin extends Plugin {
     );
 
     return buildMarkdownFromExtractedPdfText(extracted, paperTitle);
+  }
+
+  private async convertPdfWithMarkitdown(
+    pdfAbsPath: string,
+    paperFolder: string,
+    paperTitle: string,
+    sourcePdfPath: string,
+    adapter: FileSystemAdapter
+  ): Promise<string> {
+    this.setStatus("Philosophy Reader: converting PDF with MarkItDown...");
+    new Notice("Converting PDF with MarkItDown...");
+
+    const outputDir = path.join(adapter.getFullPath(paperFolder), ".markitdown-output");
+    if (fs.existsSync(outputDir)) {
+      fs.rmSync(outputDir, { recursive: true, force: true });
+    }
+    fs.mkdirSync(outputDir, { recursive: true });
+    const outputPath = path.join(outputDir, "markitdown.md");
+    const logPath = path.join(outputDir, "import.log");
+    const markitdownArgs = [
+      pdfAbsPath,
+      "-o",
+      outputPath
+    ];
+
+    try {
+      const result = await execFileAsync(this.settings.markitdownCommand, markitdownArgs, {
+        maxBuffer: 1024 * 1024 * 80
+      });
+      fs.writeFileSync(logPath, formatMarkerLog(this.settings.markitdownCommand, markitdownArgs, result.stdout, result.stderr), "utf8");
+    } catch (error) {
+      const execError = error as Error & { stdout?: string; stderr?: string };
+      fs.writeFileSync(logPath, formatMarkerLog(this.settings.markitdownCommand, markitdownArgs, execError.stdout || "", execError.stderr || toErrorMessage(error)), "utf8");
+      throw new Error(`MarkItDown conversion failed. See ${logPath}`);
+    }
+
+    if (!fs.existsSync(outputPath)) {
+      throw new Error("MarkItDown finished without producing a markdown file.");
+    }
+
+    const importedMarkdown = fs.readFileSync(outputPath, "utf8").trim();
+    if (importedMarkdown.replace(/\s/g, "").length < 800) {
+      throw new Error("MarkItDown found very little selectable text. This PDF may need OCR.");
+    }
+
+    const quality = analyzeMarkdownQuality(importedMarkdown);
+    await this.writeVaultTextFile(joinVaultPath(paperFolder, "_source", "markitdown.md"), `${importedMarkdown}\n`);
+    await this.writeVaultTextFile(
+      joinVaultPath(paperFolder, "_source", "import-quality.json"),
+      `${JSON.stringify({
+        backend: "markitdown",
+        command: this.settings.markitdownCommand,
+        paperTitle,
+        sourcePdf: sourcePdfPath,
+        importedAt: new Date().toISOString(),
+        quality
+      }, null, 2)}\n`
+    );
+    await this.writeVaultTextFile(
+      joinVaultPath(paperFolder, "_source", "import-warnings.md"),
+      buildImportWarningsMarkdown("MarkItDown", sourcePdfPath, quality)
+    );
+
+    fs.rmSync(outputDir, { recursive: true, force: true });
+    if (quality.riskLevel === "high" || quality.riskLevel === "medium") {
+      new Notice(`PDF imported with ${quality.riskLevel} extraction risk. Check _source/import-warnings.md before trusting formulas.`);
+    }
+    return importedMarkdown;
   }
 
   private async convertPdfWithMarker(pdfAbsPath: string, paperFolder: string, adapter: FileSystemAdapter): Promise<string> {
@@ -746,15 +834,40 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("PDF import backend")
-      .setDesc("PDF.js is the lightweight default for selectable-text PDFs. Marker is optional.")
+      .setDesc("MarkItDown is the default digital-PDF path. PDF.js is a lightweight fallback; Marker is optional.")
       .addDropdown((dropdown) => dropdown
+        .addOption("markitdown", "MarkItDown CLI")
         .addOption("pdfjs", "PDF.js text extraction")
         .addOption("marker", "Marker CLI")
         .setValue(this.plugin.settings.pdfImportBackend)
         .onChange(async (value) => {
-          const backend: PdfImportBackend = value === "marker" ? "marker" : "pdfjs";
+          const backend: PdfImportBackend = value === "marker" ? "marker" : value === "pdfjs" ? "pdfjs" : "markitdown";
           this.plugin.settings.pdfImportBackend = backend;
           await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName("MarkItDown CLI path")
+      .setDesc("Used when the backend is MarkItDown CLI. Outputs quality warnings under _source/.")
+      .addText((text) => text
+        .setPlaceholder("markitdown")
+        .setValue(this.plugin.settings.markitdownCommand)
+        .onChange(async (value) => {
+          this.plugin.settings.markitdownCommand = value.trim();
+          await this.plugin.saveSettings();
+        }))
+      .addButton((button) => button
+        .setButtonText("Use local MarkItDown")
+        .onClick(async () => {
+          const localCommand = this.plugin.getLocalMarkitdownCommand();
+          if (!localCommand || !fs.existsSync(localCommand)) {
+            new Notice("Local markitdown was not found in this plugin's .eval-venv.");
+            return;
+          }
+          this.plugin.settings.markitdownCommand = localCommand;
+          await this.plugin.saveSettings();
+          this.display();
+          new Notice("MarkItDown CLI path set to local markitdown.");
         }));
 
     new Setting(containerEl)
@@ -1052,6 +1165,54 @@ function buildImportedPaperMarkdown(markdown: string, metadata: { title: string;
     ""
   ].join("\n");
   return `${frontmatter}${content}\n`;
+}
+
+function buildImportWarningsMarkdown(backend: string, sourcePdfPath: string, quality: MarkdownQualityReport): string {
+  const lines = [
+    "---",
+    `backend: ${JSON.stringify(backend)}`,
+    `source_pdf: ${JSON.stringify(sourcePdfPath)}`,
+    `risk_level: ${JSON.stringify(quality.riskLevel)}`,
+    `risk_score: ${quality.riskScore}`,
+    `updated: ${JSON.stringify(new Date().toISOString())}`,
+    "---",
+    "",
+    "# PDF import warnings",
+    "",
+    `Backend: ${backend}`,
+    `Source PDF: [[${sourcePdfPath}]]`,
+    `Risk: ${quality.riskLevel} (${quality.riskScore})`,
+    "",
+    "## Counters",
+    "",
+    `- CID placeholders: ${quality.cidRefs}`,
+    `- Boxed formula marks: ${quality.boxedFormulaMarks}`,
+    `- Control characters: ${quality.controlChars}`,
+    `- Encoding anomalies: ${quality.mojibakeMarks + quality.replacementChars}`,
+    `- Suspicious formula marks: ${quality.suspiciousFormulaMarks}`,
+    `- Long unspaced alphabetic runs: ${quality.longAlphaRuns}`,
+    `- Markdown table-like lines: ${quality.markdownTableLines}`,
+    "",
+    "## Warnings",
+    ""
+  ];
+
+  if (quality.warnings.length === 0) {
+    lines.push("- No automatic warnings.");
+  } else {
+    lines.push(...quality.warnings.map((warning) => `- ${warning}`));
+  }
+
+  lines.push(
+    "",
+    "## Interpretation",
+    "",
+    "- Ordinary prose may still be readable when risk is medium or high.",
+    "- Do not trust formulas until CID placeholders, modal boxes, arrows, Greek letters, and subscripts have been spot-checked.",
+    "- The next fallback stage should target only risky pages or formula regions, not OCR the whole PDF by default.",
+    ""
+  );
+  return `${lines.join("\n")}\n`;
 }
 
 function findLargestMarkdownFile(folder: string): string | null {

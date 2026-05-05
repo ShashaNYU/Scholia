@@ -1,5 +1,13 @@
 node_modules/
 .venv/
+.eval-venv/
 data.json
 .DS_Store
 npm-debug.log*
+eval/pdf-tools/output/
+tools/scholar-md/.venv/
+tools/scholar-md/dist/
+tools/scholar-md/build/
+tools/scholar-md/*.egg-info/
+tools/scholar-md/src/*.egg-info/
+tools/scholar-md/**/__pycache__/
