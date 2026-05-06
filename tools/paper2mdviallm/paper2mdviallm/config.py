@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 load_dotenv()
 
-_CONFIG_PATH = Path.home() / ".paper2md" / "config.toml"
+_CONFIG_PATH = Path.home() / ".paper2mdviallm" / "config.toml"
 
 
 class ApiConfig(BaseModel):

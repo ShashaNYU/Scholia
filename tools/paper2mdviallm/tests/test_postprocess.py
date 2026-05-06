@@ -1,5 +1,5 @@
-from paper2md.metadata import PaperMetadata
-from paper2md.postprocess import consolidate_footnotes, escape_brackets, normalize_escaped_math_brackets, postprocess
+from paper2mdviallm.metadata import PaperMetadata
+from paper2mdviallm.postprocess import consolidate_footnotes, escape_brackets, normalize_escaped_math_brackets, postprocess
 
 
 def test_escape_plain_brackets():

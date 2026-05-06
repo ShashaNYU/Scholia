@@ -9,7 +9,7 @@ import { parseJsonFromText, parseLooseJsonFromText, type ContextCluster, type Pa
 import type { SepSearchCandidate } from "./sep.js";
 
 export type ProviderName = "openai" | "anthropic";
-export type PdfImportBackend = "scholar-md" | "paper2md" | "marker";
+export type PdfImportBackend = "scholar-md" | "paper2mdviallm" | "marker";
 export type GlossaryExplanationLength = "standard" | "brief";
 export type KeySentenceDensity = "sparse" | "medium";
 
@@ -20,9 +20,9 @@ export interface PhilosophyReaderSettings {
   openaiModel: string;
   anthropicModel: string;
   pdfImportBackend: PdfImportBackend;
-  paper2mdCommand: string;
-  paper2mdModel: string;
-  paper2mdConcurrency: number;
+  paper2mdviallmCommand: string;
+  paper2mdviallmModel: string;
+  paper2mdviallmConcurrency: number;
   markerCommand: string;
   maxPrecomputedTerms: number;
   glossaryFolderName: string;

@@ -78,10 +78,10 @@ const DEFAULT_SETTINGS: PhilosophyReaderSettings = {
   anthropicApiKey: "",
   openaiModel: "gpt-5.4-mini",
   anthropicModel: "claude-sonnet-4-6",
-  pdfImportBackend: "paper2md",
-  paper2mdCommand: "paper2md",
-  paper2mdModel: "claude-sonnet-4-6",
-  paper2mdConcurrency: 3,
+  pdfImportBackend: "paper2mdviallm",
+  paper2mdviallmCommand: "paper2mdviallm",
+  paper2mdviallmModel: "claude-sonnet-4-6",
+  paper2mdviallmConcurrency: 3,
   markerCommand: "marker_single",
   maxPrecomputedTerms: 40,
   glossaryFolderName: "_glossary",
@@ -301,8 +301,8 @@ export default class PhilosophyReaderPlugin extends Plugin {
     return this.findLocalToolCommand("scholar-md");
   }
 
-  getLocalPaper2mdCommand(): string | null {
-    return this.findLocalToolCommand("paper2md");
+  getLocalPaper2mdViaLlmCommand(): string | null {
+    return this.findLocalToolCommand("paper2mdviallm");
   }
 
   private findLocalToolCommand(executableBaseName: string): string | null {
@@ -329,22 +329,22 @@ export default class PhilosophyReaderPlugin extends Plugin {
     return { command: "scholar-md", source: "path" };
   }
 
-  private resolvePaper2mdCommand(): ResolvedCommand {
-    const configured = this.settings.paper2mdCommand.trim();
-    if (configured && configured !== DEFAULT_SETTINGS.paper2mdCommand) {
-      const resolvedConfigured = resolveConfiguredToolCommand(configured, "paper2md");
+  private resolvePaper2mdViaLlmCommand(): ResolvedCommand {
+    const configured = this.settings.paper2mdviallmCommand.trim();
+    if (configured && configured !== DEFAULT_SETTINGS.paper2mdviallmCommand) {
+      const resolvedConfigured = resolveConfiguredToolCommand(configured, "paper2mdviallm");
       return {
         command: resolvedConfigured,
         source: looksLikeLocalPath(configured) ? "local" : "path"
       };
     }
 
-    const localPaper2md = this.getLocalPaper2mdCommand();
-    if (localPaper2md && fs.existsSync(localPaper2md)) {
-      return { command: localPaper2md, source: "local" };
+    const localPaper2mdViaLlm = this.getLocalPaper2mdViaLlmCommand();
+    if (localPaper2mdViaLlm && fs.existsSync(localPaper2mdViaLlm)) {
+      return { command: localPaper2mdViaLlm, source: "local" };
     }
 
-    return { command: DEFAULT_SETTINGS.paper2mdCommand, source: "path" };
+    return { command: DEFAULT_SETTINGS.paper2mdviallmCommand, source: "path" };
   }
 
   private getPluginDiskPath(): string | null {
@@ -372,6 +372,25 @@ export default class PhilosophyReaderPlugin extends Plugin {
     }
 
     const raw = this.settings as unknown as Record<string, unknown>;
+    if (raw.paper2mdCommand !== undefined && raw.paper2mdviallmCommand === undefined) {
+      raw.paper2mdviallmCommand = raw.paper2mdCommand;
+      delete raw.paper2mdCommand;
+      void this.saveSettings();
+    }
+    if (raw.paper2mdModel !== undefined && raw.paper2mdviallmModel === undefined) {
+      raw.paper2mdviallmModel = raw.paper2mdModel;
+      delete raw.paper2mdModel;
+      void this.saveSettings();
+    }
+    if (raw.paper2mdConcurrency !== undefined && raw.paper2mdviallmConcurrency === undefined) {
+      raw.paper2mdviallmConcurrency = raw.paper2mdConcurrency;
+      delete raw.paper2mdConcurrency;
+      void this.saveSettings();
+    }
+    if ((this.settings.pdfImportBackend as string) === "paper2md") {
+      this.settings.pdfImportBackend = "paper2mdviallm";
+      void this.saveSettings();
+    }
     if (raw.markitdownCommand !== undefined) {
       delete raw.markitdownCommand;
       void this.saveSettings();
@@ -551,7 +570,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
         return;
       }
       const scholarMdCommand = this.resolveScholarMdCommand();
-      const paper2mdCommand = this.resolvePaper2mdCommand();
+      const paper2mdViaLlmCommand = this.resolvePaper2mdViaLlmCommand();
 
       const adapter = this.app.vault.adapter;
       if (!(adapter instanceof FileSystemAdapter)) {
@@ -592,8 +611,8 @@ export default class PhilosophyReaderPlugin extends Plugin {
       const pdfAbsPath = adapter.getFullPath(pdfTarget);
       const importedMarkdown = this.settings.pdfImportBackend === "marker"
         ? await this.convertPdfWithMarker(pdfAbsPath, paperFolder, adapter)
-        : this.settings.pdfImportBackend === "paper2md"
-          ? await this.convertPdfWithPaper2md(pdfAbsPath, paperFolder, baseName, pdfTarget, adapter, paper2mdCommand)
+        : this.settings.pdfImportBackend === "paper2mdviallm"
+          ? await this.convertPdfWithPaper2MDViaLLM(pdfAbsPath, paperFolder, baseName, pdfTarget, adapter, paper2mdViaLlmCommand)
           : await this.convertPdfWithScholarMd(pdfAbsPath, paperFolder, baseName, pdfTarget, adapter, scholarMdCommand);
       const paperMarkdown = buildImportedPaperMarkdown(importedMarkdown, {
         title: baseName,
@@ -627,7 +646,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
     }
   }
 
-  private async convertPdfWithPaper2md(
+  private async convertPdfWithPaper2MDViaLLM(
     pdfAbsPath: string,
     paperFolder: string,
     paperTitle: string,
@@ -635,27 +654,27 @@ export default class PhilosophyReaderPlugin extends Plugin {
     adapter: FileSystemAdapter,
     resolvedCommand: ResolvedCommand
   ): Promise<string> {
-    const model = this.resolvePaper2mdModel();
-    const concurrency = Math.max(1, Math.round(this.settings.paper2mdConcurrency || DEFAULT_SETTINGS.paper2mdConcurrency));
+    const model = this.resolvePaper2mdViaLlmModel();
+    const concurrency = Math.max(1, Math.round(this.settings.paper2mdviallmConcurrency || DEFAULT_SETTINGS.paper2mdviallmConcurrency));
     const usingOpenAI = isOpenAIModel(model);
     if (usingOpenAI && !this.settings.openaiApiKey.trim()) {
-      throw new Error("Paper2MD is configured with an OpenAI model, but the OpenAI API key is empty.");
+      throw new Error("Paper2MDViaLLM is configured with an OpenAI model, but the OpenAI API key is empty.");
     }
     if (!usingOpenAI && !this.settings.anthropicApiKey.trim()) {
-      throw new Error("Paper2MD is configured with an Anthropic model, but the Anthropic API key is empty.");
+      throw new Error("Paper2MDViaLLM is configured with an Anthropic model, but the Anthropic API key is empty.");
     }
 
-    this.setStatus("Scholia: converting PDF with Paper2MD...");
-    const commandLabel = resolvedCommand.source === "local" ? "local Paper2MD" : "Paper2MD";
+    this.setStatus("Scholia: converting PDF with Paper2MDViaLLM...");
+    const commandLabel = resolvedCommand.source === "local" ? "local Paper2MDViaLLM" : "Paper2MDViaLLM";
     new Notice(`Converting PDF with ${commandLabel}...`);
 
-    const outputDir = path.join(adapter.getFullPath(paperFolder), ".paper2md-output");
+    const outputDir = path.join(adapter.getFullPath(paperFolder), ".paper2mdviallm-output");
     if (fs.existsSync(outputDir)) {
       fs.rmSync(outputDir, { recursive: true, force: true });
     }
     fs.mkdirSync(outputDir, { recursive: true });
     const logPath = path.join(outputDir, "import.log");
-    const paper2mdArgs = [
+    const paper2mdViaLlmArgs = [
       "convert",
       pdfAbsPath,
       "-o",
@@ -667,39 +686,39 @@ export default class PhilosophyReaderPlugin extends Plugin {
     ];
 
     try {
-      const result = await execFileAsync(resolvedCommand.command, paper2mdArgs, {
+      const result = await execFileAsync(resolvedCommand.command, paper2mdViaLlmArgs, {
         maxBuffer: 1024 * 1024 * 80,
         env: this.buildPaper2mdEnv()
       });
-      fs.writeFileSync(logPath, formatMarkerLog(resolvedCommand.command, paper2mdArgs, result.stdout, result.stderr), "utf8");
+      fs.writeFileSync(logPath, formatMarkerLog(resolvedCommand.command, paper2mdViaLlmArgs, result.stdout, result.stderr), "utf8");
     } catch (error) {
       const execError = error as Error & { stdout?: string; stderr?: string };
-      fs.writeFileSync(logPath, formatMarkerLog(resolvedCommand.command, paper2mdArgs, execError.stdout || "", execError.stderr || toErrorMessage(error)), "utf8");
-      throw new Error(`Paper2MD conversion failed. See ${logPath}`);
+      fs.writeFileSync(logPath, formatMarkerLog(resolvedCommand.command, paper2mdViaLlmArgs, execError.stdout || "", execError.stderr || toErrorMessage(error)), "utf8");
+      throw new Error(`Paper2MDViaLLM conversion failed. See ${logPath}`);
     }
 
-    const paper2mdMarkdown = findLargestMarkdownFile(outputDir);
-    if (!paper2mdMarkdown) {
-      throw new Error("Paper2MD finished without producing a markdown file.");
+    const paper2mdViaLlmMarkdown = findLargestMarkdownFile(outputDir);
+    if (!paper2mdViaLlmMarkdown) {
+      throw new Error("Paper2MDViaLLM finished without producing a markdown file.");
     }
 
-    const importedMarkdown = fs.readFileSync(paper2mdMarkdown, "utf8").trim();
+    const importedMarkdown = fs.readFileSync(paper2mdViaLlmMarkdown, "utf8").trim();
     if (importedMarkdown.replace(/\s/g, "").length < 800) {
-      throw new Error("Paper2MD found very little readable text. This PDF may still need targeted OCR or a different import backend.");
+      throw new Error("Paper2MDViaLLM found very little readable text. This PDF may still need targeted OCR or a different import backend.");
     }
 
     const quality = analyzeMarkdownQuality(importedMarkdown);
-    await this.writeVaultTextFile(joinVaultPath(paperFolder, "_source", "paper2md.md"), `${importedMarkdown}\n`);
+    await this.writeVaultTextFile(joinVaultPath(paperFolder, "_source", "paper2mdviallm.md"), `${importedMarkdown}\n`);
     await this.writeVaultTextFile(
       joinVaultPath(paperFolder, "_source", "import-quality.json"),
       `${JSON.stringify({
-        backend: "paper2md",
+        backend: "paper2mdviallm",
         command: resolvedCommand.command,
         commandSource: resolvedCommand.source,
         model,
         llmProvider: usingOpenAI ? "openai" : "anthropic",
         concurrency,
-        generatedFile: path.basename(paper2mdMarkdown),
+        generatedFile: path.basename(paper2mdViaLlmMarkdown),
         paperTitle,
         sourcePdf: sourcePdfPath,
         importedAt: new Date().toISOString(),
@@ -708,7 +727,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
     );
     await this.writeVaultTextFile(
       joinVaultPath(paperFolder, "_source", "import-warnings.md"),
-      buildImportWarningsMarkdown("Paper2MD", sourcePdfPath, quality)
+      buildImportWarningsMarkdown("Paper2MDViaLLM", sourcePdfPath, quality)
     );
 
     fs.rmSync(outputDir, { recursive: true, force: true });
@@ -839,12 +858,12 @@ export default class PhilosophyReaderPlugin extends Plugin {
     return importedMarkdown;
   }
 
-  private resolvePaper2mdModel(): string {
-    const override = this.settings.paper2mdModel.trim();
+  private resolvePaper2mdViaLlmModel(): string {
+    const override = this.settings.paper2mdviallmModel.trim();
     if (override) {
       return override;
     }
-    return DEFAULT_SETTINGS.paper2mdModel;
+    return DEFAULT_SETTINGS.paper2mdviallmModel;
   }
 
   private buildPaper2mdEnv(): NodeJS.ProcessEnv {
@@ -1646,66 +1665,66 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("PDF import backend")
-      .setDesc("Paper2MD is now the default path. Scholar-MD stays available as a lighter beta path; Marker remains optional and not recommended.")
+      .setDesc("Paper2MDViaLLM is now the default path. Scholar-MD stays available as a lighter beta path; Marker remains optional and not recommended.")
       .addDropdown((dropdown) => dropdown
-        .addOption("paper2md", "Paper2MD (LLM-native)")
+        .addOption("paper2mdviallm", "Paper2MDViaLLM")
         .addOption("scholar-md", "Scholar-MD (beta)")
         .addOption("marker", "Marker CLI (not recommended)")
         .setValue(this.plugin.settings.pdfImportBackend)
         .onChange(async (value) => {
           const backend: PdfImportBackend = value === "marker"
             ? "marker"
-            : value === "paper2md"
-              ? "paper2md"
+            : value === "paper2mdviallm"
+              ? "paper2mdviallm"
               : "scholar-md";
           this.plugin.settings.pdfImportBackend = backend;
           await this.plugin.saveSettings();
         }));
 
     new Setting(containerEl)
-      .setName("Paper2MD CLI path")
-      .setDesc("Optional. Resolution order: explicit setting, plugin .venv local tool, then shell PATH. You can paste either the executable itself or an environment root such as a conda env; Scholia will resolve `bin/paper2md` or `Scripts/paper2md.exe` inside it.")
+      .setName("Paper2MDViaLLM CLI path")
+      .setDesc("Optional. Resolution order: explicit setting, plugin .venv local tool, then shell PATH. You can paste either the executable itself or an environment root such as a conda env; Scholia will resolve `bin/paper2mdviallm` or `Scripts/paper2mdviallm.exe` inside it.")
       .addText((text) => text
-        .setPlaceholder("paper2md")
-        .setValue(this.plugin.settings.paper2mdCommand)
+        .setPlaceholder("paper2mdviallm")
+        .setValue(this.plugin.settings.paper2mdviallmCommand)
         .onChange(async (value) => {
-          this.plugin.settings.paper2mdCommand = value.trim() || DEFAULT_SETTINGS.paper2mdCommand;
+          this.plugin.settings.paper2mdviallmCommand = value.trim() || DEFAULT_SETTINGS.paper2mdviallmCommand;
           await this.plugin.saveSettings();
         }))
       .addButton((button) => button
-        .setButtonText("Use local Paper2MD")
+        .setButtonText("Use local Paper2MDViaLLM")
         .onClick(async () => {
-          const localCommand = this.plugin.getLocalPaper2mdCommand();
+          const localCommand = this.plugin.getLocalPaper2mdViaLlmCommand();
           if (!localCommand || !fs.existsSync(localCommand)) {
-            new Notice("Local paper2md was not found in this plugin's .venv.");
+            new Notice("Local paper2mdviallm was not found in this plugin's .venv.");
             return;
           }
-          this.plugin.settings.paper2mdCommand = localCommand;
+          this.plugin.settings.paper2mdviallmCommand = localCommand;
           await this.plugin.saveSettings();
           this.display();
-          new Notice("Paper2MD CLI path set to local paper2md.");
+          new Notice("Paper2MDViaLLM CLI path set to local paper2mdviallm.");
         }));
 
     new Setting(containerEl)
       .setName("Markdown generation model")
-      .setDesc("Used by Paper2MD. Provider is inferred from the model name, so API keys stay global and only need to be filled once.")
+      .setDesc("Used by Paper2MDViaLLM. Provider is inferred from the model name, so API keys stay global and only need to be filled once.")
       .addText((text) => text
-        .setPlaceholder(DEFAULT_SETTINGS.paper2mdModel)
-        .setValue(this.plugin.settings.paper2mdModel)
+        .setPlaceholder(DEFAULT_SETTINGS.paper2mdviallmModel)
+        .setValue(this.plugin.settings.paper2mdviallmModel)
         .onChange(async (value) => {
-          this.plugin.settings.paper2mdModel = value.trim() || DEFAULT_SETTINGS.paper2mdModel;
+          this.plugin.settings.paper2mdviallmModel = value.trim() || DEFAULT_SETTINGS.paper2mdviallmModel;
           await this.plugin.saveSettings();
         }));
 
     new Setting(containerEl)
-      .setName("Paper2MD concurrency")
-      .setDesc("Only used when the backend is Paper2MD. Higher values are faster but cost more API work in parallel.")
+      .setName("Paper2MDViaLLM concurrency")
+      .setDesc("Only used when the backend is Paper2MDViaLLM. Higher values are faster but cost more API work in parallel.")
       .addSlider((slider) => slider
         .setLimits(1, 6, 1)
         .setDynamicTooltip()
-        .setValue(this.plugin.settings.paper2mdConcurrency)
+        .setValue(this.plugin.settings.paper2mdviallmConcurrency)
         .onChange(async (value) => {
-          this.plugin.settings.paper2mdConcurrency = value;
+          this.plugin.settings.paper2mdviallmConcurrency = value;
           await this.plugin.saveSettings();
         }));
 

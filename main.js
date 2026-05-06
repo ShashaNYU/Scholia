@@ -1548,10 +1548,10 @@ var DEFAULT_SETTINGS = {
   anthropicApiKey: "",
   openaiModel: "gpt-5.4-mini",
   anthropicModel: "claude-sonnet-4-6",
-  pdfImportBackend: "paper2md",
-  paper2mdCommand: "paper2md",
-  paper2mdModel: "claude-sonnet-4-6",
-  paper2mdConcurrency: 3,
+  pdfImportBackend: "paper2mdviallm",
+  paper2mdviallmCommand: "paper2mdviallm",
+  paper2mdviallmModel: "claude-sonnet-4-6",
+  paper2mdviallmConcurrency: 3,
   markerCommand: "marker_single",
   maxPrecomputedTerms: 40,
   glossaryFolderName: "_glossary",
@@ -1702,8 +1702,8 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
   getLocalScholarMdCommand() {
     return this.findLocalToolCommand("scholar-md");
   }
-  getLocalPaper2mdCommand() {
-    return this.findLocalToolCommand("paper2md");
+  getLocalPaper2mdViaLlmCommand() {
+    return this.findLocalToolCommand("paper2mdviallm");
   }
   findLocalToolCommand(executableBaseName) {
     const pluginPath = this.getPluginDiskPath();
@@ -1725,20 +1725,20 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
     }
     return { command: "scholar-md", source: "path" };
   }
-  resolvePaper2mdCommand() {
-    const configured = this.settings.paper2mdCommand.trim();
-    if (configured && configured !== DEFAULT_SETTINGS.paper2mdCommand) {
-      const resolvedConfigured = resolveConfiguredToolCommand(configured, "paper2md");
+  resolvePaper2mdViaLlmCommand() {
+    const configured = this.settings.paper2mdviallmCommand.trim();
+    if (configured && configured !== DEFAULT_SETTINGS.paper2mdviallmCommand) {
+      const resolvedConfigured = resolveConfiguredToolCommand(configured, "paper2mdviallm");
       return {
         command: resolvedConfigured,
         source: looksLikeLocalPath(configured) ? "local" : "path"
       };
     }
-    const localPaper2md = this.getLocalPaper2mdCommand();
-    if (localPaper2md && fs.existsSync(localPaper2md)) {
-      return { command: localPaper2md, source: "local" };
+    const localPaper2mdViaLlm = this.getLocalPaper2mdViaLlmCommand();
+    if (localPaper2mdViaLlm && fs.existsSync(localPaper2mdViaLlm)) {
+      return { command: localPaper2mdViaLlm, source: "local" };
     }
-    return { command: DEFAULT_SETTINGS.paper2mdCommand, source: "path" };
+    return { command: DEFAULT_SETTINGS.paper2mdviallmCommand, source: "path" };
   }
   getPluginDiskPath() {
     const adapter = this.app.vault.adapter;
@@ -1761,6 +1761,25 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
       void this.saveSettings();
     }
     const raw = this.settings;
+    if (raw.paper2mdCommand !== void 0 && raw.paper2mdviallmCommand === void 0) {
+      raw.paper2mdviallmCommand = raw.paper2mdCommand;
+      delete raw.paper2mdCommand;
+      void this.saveSettings();
+    }
+    if (raw.paper2mdModel !== void 0 && raw.paper2mdviallmModel === void 0) {
+      raw.paper2mdviallmModel = raw.paper2mdModel;
+      delete raw.paper2mdModel;
+      void this.saveSettings();
+    }
+    if (raw.paper2mdConcurrency !== void 0 && raw.paper2mdviallmConcurrency === void 0) {
+      raw.paper2mdviallmConcurrency = raw.paper2mdConcurrency;
+      delete raw.paper2mdConcurrency;
+      void this.saveSettings();
+    }
+    if (this.settings.pdfImportBackend === "paper2md") {
+      this.settings.pdfImportBackend = "paper2mdviallm";
+      void this.saveSettings();
+    }
     if (raw.markitdownCommand !== void 0) {
       delete raw.markitdownCommand;
       void this.saveSettings();
@@ -1898,7 +1917,7 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
         return;
       }
       const scholarMdCommand = this.resolveScholarMdCommand();
-      const paper2mdCommand = this.resolvePaper2mdCommand();
+      const paper2mdViaLlmCommand = this.resolvePaper2mdViaLlmCommand();
       const adapter = this.app.vault.adapter;
       if (!(adapter instanceof import_obsidian2.FileSystemAdapter)) {
         new import_obsidian2.Notice("PDF import requires a local filesystem vault.");
@@ -1928,7 +1947,7 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
       await this.ensureFolder(joinVaultPath(paperFolder, this.settings.glossaryFolderName));
       await this.ensureFolder(joinVaultPath(paperFolder, "_source"));
       const pdfAbsPath = adapter.getFullPath(pdfTarget);
-      const importedMarkdown = this.settings.pdfImportBackend === "marker" ? await this.convertPdfWithMarker(pdfAbsPath, paperFolder, adapter) : this.settings.pdfImportBackend === "paper2md" ? await this.convertPdfWithPaper2md(pdfAbsPath, paperFolder, baseName, pdfTarget, adapter, paper2mdCommand) : await this.convertPdfWithScholarMd(pdfAbsPath, paperFolder, baseName, pdfTarget, adapter, scholarMdCommand);
+      const importedMarkdown = this.settings.pdfImportBackend === "marker" ? await this.convertPdfWithMarker(pdfAbsPath, paperFolder, adapter) : this.settings.pdfImportBackend === "paper2mdviallm" ? await this.convertPdfWithPaper2MDViaLLM(pdfAbsPath, paperFolder, baseName, pdfTarget, adapter, paper2mdViaLlmCommand) : await this.convertPdfWithScholarMd(pdfAbsPath, paperFolder, baseName, pdfTarget, adapter, scholarMdCommand);
       const paperMarkdown = buildImportedPaperMarkdown(importedMarkdown, {
         title: baseName,
         sourcePdf: pdfTarget,
@@ -1958,26 +1977,26 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
       this.setStatus("");
     }
   }
-  async convertPdfWithPaper2md(pdfAbsPath, paperFolder, paperTitle, sourcePdfPath, adapter, resolvedCommand) {
-    const model = this.resolvePaper2mdModel();
-    const concurrency = Math.max(1, Math.round(this.settings.paper2mdConcurrency || DEFAULT_SETTINGS.paper2mdConcurrency));
+  async convertPdfWithPaper2MDViaLLM(pdfAbsPath, paperFolder, paperTitle, sourcePdfPath, adapter, resolvedCommand) {
+    const model = this.resolvePaper2mdViaLlmModel();
+    const concurrency = Math.max(1, Math.round(this.settings.paper2mdviallmConcurrency || DEFAULT_SETTINGS.paper2mdviallmConcurrency));
     const usingOpenAI = isOpenAIModel(model);
     if (usingOpenAI && !this.settings.openaiApiKey.trim()) {
-      throw new Error("Paper2MD is configured with an OpenAI model, but the OpenAI API key is empty.");
+      throw new Error("Paper2MDViaLLM is configured with an OpenAI model, but the OpenAI API key is empty.");
     }
     if (!usingOpenAI && !this.settings.anthropicApiKey.trim()) {
-      throw new Error("Paper2MD is configured with an Anthropic model, but the Anthropic API key is empty.");
+      throw new Error("Paper2MDViaLLM is configured with an Anthropic model, but the Anthropic API key is empty.");
     }
-    this.setStatus("Scholia: converting PDF with Paper2MD...");
-    const commandLabel = resolvedCommand.source === "local" ? "local Paper2MD" : "Paper2MD";
+    this.setStatus("Scholia: converting PDF with Paper2MDViaLLM...");
+    const commandLabel = resolvedCommand.source === "local" ? "local Paper2MDViaLLM" : "Paper2MDViaLLM";
     new import_obsidian2.Notice(`Converting PDF with ${commandLabel}...`);
-    const outputDir = path.join(adapter.getFullPath(paperFolder), ".paper2md-output");
+    const outputDir = path.join(adapter.getFullPath(paperFolder), ".paper2mdviallm-output");
     if (fs.existsSync(outputDir)) {
       fs.rmSync(outputDir, { recursive: true, force: true });
     }
     fs.mkdirSync(outputDir, { recursive: true });
     const logPath = path.join(outputDir, "import.log");
-    const paper2mdArgs = [
+    const paper2mdViaLlmArgs = [
       "convert",
       pdfAbsPath,
       "-o",
@@ -1988,37 +2007,37 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
       String(concurrency)
     ];
     try {
-      const result = await execFileAsync(resolvedCommand.command, paper2mdArgs, {
+      const result = await execFileAsync(resolvedCommand.command, paper2mdViaLlmArgs, {
         maxBuffer: 1024 * 1024 * 80,
         env: this.buildPaper2mdEnv()
       });
-      fs.writeFileSync(logPath, formatMarkerLog(resolvedCommand.command, paper2mdArgs, result.stdout, result.stderr), "utf8");
+      fs.writeFileSync(logPath, formatMarkerLog(resolvedCommand.command, paper2mdViaLlmArgs, result.stdout, result.stderr), "utf8");
     } catch (error) {
       const execError = error;
-      fs.writeFileSync(logPath, formatMarkerLog(resolvedCommand.command, paper2mdArgs, execError.stdout || "", execError.stderr || toErrorMessage(error)), "utf8");
-      throw new Error(`Paper2MD conversion failed. See ${logPath}`);
+      fs.writeFileSync(logPath, formatMarkerLog(resolvedCommand.command, paper2mdViaLlmArgs, execError.stdout || "", execError.stderr || toErrorMessage(error)), "utf8");
+      throw new Error(`Paper2MDViaLLM conversion failed. See ${logPath}`);
     }
-    const paper2mdMarkdown = findLargestMarkdownFile(outputDir);
-    if (!paper2mdMarkdown) {
-      throw new Error("Paper2MD finished without producing a markdown file.");
+    const paper2mdViaLlmMarkdown = findLargestMarkdownFile(outputDir);
+    if (!paper2mdViaLlmMarkdown) {
+      throw new Error("Paper2MDViaLLM finished without producing a markdown file.");
     }
-    const importedMarkdown = fs.readFileSync(paper2mdMarkdown, "utf8").trim();
+    const importedMarkdown = fs.readFileSync(paper2mdViaLlmMarkdown, "utf8").trim();
     if (importedMarkdown.replace(/\s/g, "").length < 800) {
-      throw new Error("Paper2MD found very little readable text. This PDF may still need targeted OCR or a different import backend.");
+      throw new Error("Paper2MDViaLLM found very little readable text. This PDF may still need targeted OCR or a different import backend.");
     }
     const quality = (0, import_core2.analyzeMarkdownQuality)(importedMarkdown);
-    await this.writeVaultTextFile(joinVaultPath(paperFolder, "_source", "paper2md.md"), `${importedMarkdown}
+    await this.writeVaultTextFile(joinVaultPath(paperFolder, "_source", "paper2mdviallm.md"), `${importedMarkdown}
 `);
     await this.writeVaultTextFile(
       joinVaultPath(paperFolder, "_source", "import-quality.json"),
       `${JSON.stringify({
-        backend: "paper2md",
+        backend: "paper2mdviallm",
         command: resolvedCommand.command,
         commandSource: resolvedCommand.source,
         model,
         llmProvider: usingOpenAI ? "openai" : "anthropic",
         concurrency,
-        generatedFile: path.basename(paper2mdMarkdown),
+        generatedFile: path.basename(paper2mdViaLlmMarkdown),
         paperTitle,
         sourcePdf: sourcePdfPath,
         importedAt: (/* @__PURE__ */ new Date()).toISOString(),
@@ -2028,7 +2047,7 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
     );
     await this.writeVaultTextFile(
       joinVaultPath(paperFolder, "_source", "import-warnings.md"),
-      buildImportWarningsMarkdown("Paper2MD", sourcePdfPath, quality)
+      buildImportWarningsMarkdown("Paper2MDViaLLM", sourcePdfPath, quality)
     );
     fs.rmSync(outputDir, { recursive: true, force: true });
     if (quality.riskLevel === "high" || quality.riskLevel === "medium") {
@@ -2141,12 +2160,12 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
     fs.rmSync(outputDir, { recursive: true, force: true });
     return importedMarkdown;
   }
-  resolvePaper2mdModel() {
-    const override = this.settings.paper2mdModel.trim();
+  resolvePaper2mdViaLlmModel() {
+    const override = this.settings.paper2mdviallmModel.trim();
     if (override) {
       return override;
     }
-    return DEFAULT_SETTINGS.paper2mdModel;
+    return DEFAULT_SETTINGS.paper2mdviallmModel;
   }
   buildPaper2mdEnv() {
     const env = { ...process.env };
@@ -2836,31 +2855,31 @@ var PhilosophyReaderSettingTab = class extends import_obsidian2.PluginSettingTab
     containerEl.empty();
     new import_obsidian2.Setting(containerEl).setName("Scholia").setHeading();
     new import_obsidian2.Setting(containerEl).setName("Markdown generation").setHeading();
-    new import_obsidian2.Setting(containerEl).setName("PDF import backend").setDesc("Paper2MD is now the default path. Scholar-MD stays available as a lighter beta path; Marker remains optional and not recommended.").addDropdown((dropdown) => dropdown.addOption("paper2md", "Paper2MD (LLM-native)").addOption("scholar-md", "Scholar-MD (beta)").addOption("marker", "Marker CLI (not recommended)").setValue(this.plugin.settings.pdfImportBackend).onChange(async (value) => {
-      const backend = value === "marker" ? "marker" : value === "paper2md" ? "paper2md" : "scholar-md";
+    new import_obsidian2.Setting(containerEl).setName("PDF import backend").setDesc("Paper2MDViaLLM is now the default path. Scholar-MD stays available as a lighter beta path; Marker remains optional and not recommended.").addDropdown((dropdown) => dropdown.addOption("paper2mdviallm", "Paper2MDViaLLM").addOption("scholar-md", "Scholar-MD (beta)").addOption("marker", "Marker CLI (not recommended)").setValue(this.plugin.settings.pdfImportBackend).onChange(async (value) => {
+      const backend = value === "marker" ? "marker" : value === "paper2mdviallm" ? "paper2mdviallm" : "scholar-md";
       this.plugin.settings.pdfImportBackend = backend;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian2.Setting(containerEl).setName("Paper2MD CLI path").setDesc("Optional. Resolution order: explicit setting, plugin .venv local tool, then shell PATH. You can paste either the executable itself or an environment root such as a conda env; Scholia will resolve `bin/paper2md` or `Scripts/paper2md.exe` inside it.").addText((text) => text.setPlaceholder("paper2md").setValue(this.plugin.settings.paper2mdCommand).onChange(async (value) => {
-      this.plugin.settings.paper2mdCommand = value.trim() || DEFAULT_SETTINGS.paper2mdCommand;
+    new import_obsidian2.Setting(containerEl).setName("Paper2MDViaLLM CLI path").setDesc("Optional. Resolution order: explicit setting, plugin .venv local tool, then shell PATH. You can paste either the executable itself or an environment root such as a conda env; Scholia will resolve `bin/paper2mdviallm` or `Scripts/paper2mdviallm.exe` inside it.").addText((text) => text.setPlaceholder("paper2mdviallm").setValue(this.plugin.settings.paper2mdviallmCommand).onChange(async (value) => {
+      this.plugin.settings.paper2mdviallmCommand = value.trim() || DEFAULT_SETTINGS.paper2mdviallmCommand;
       await this.plugin.saveSettings();
-    })).addButton((button) => button.setButtonText("Use local Paper2MD").onClick(async () => {
-      const localCommand = this.plugin.getLocalPaper2mdCommand();
+    })).addButton((button) => button.setButtonText("Use local Paper2MDViaLLM").onClick(async () => {
+      const localCommand = this.plugin.getLocalPaper2mdViaLlmCommand();
       if (!localCommand || !fs.existsSync(localCommand)) {
-        new import_obsidian2.Notice("Local paper2md was not found in this plugin's .venv.");
+        new import_obsidian2.Notice("Local paper2mdviallm was not found in this plugin's .venv.");
         return;
       }
-      this.plugin.settings.paper2mdCommand = localCommand;
+      this.plugin.settings.paper2mdviallmCommand = localCommand;
       await this.plugin.saveSettings();
       this.display();
-      new import_obsidian2.Notice("Paper2MD CLI path set to local paper2md.");
+      new import_obsidian2.Notice("Paper2MDViaLLM CLI path set to local paper2mdviallm.");
     }));
-    new import_obsidian2.Setting(containerEl).setName("Markdown generation model").setDesc("Used by Paper2MD. Provider is inferred from the model name, so API keys stay global and only need to be filled once.").addText((text) => text.setPlaceholder(DEFAULT_SETTINGS.paper2mdModel).setValue(this.plugin.settings.paper2mdModel).onChange(async (value) => {
-      this.plugin.settings.paper2mdModel = value.trim() || DEFAULT_SETTINGS.paper2mdModel;
+    new import_obsidian2.Setting(containerEl).setName("Markdown generation model").setDesc("Used by Paper2MDViaLLM. Provider is inferred from the model name, so API keys stay global and only need to be filled once.").addText((text) => text.setPlaceholder(DEFAULT_SETTINGS.paper2mdviallmModel).setValue(this.plugin.settings.paper2mdviallmModel).onChange(async (value) => {
+      this.plugin.settings.paper2mdviallmModel = value.trim() || DEFAULT_SETTINGS.paper2mdviallmModel;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian2.Setting(containerEl).setName("Paper2MD concurrency").setDesc("Only used when the backend is Paper2MD. Higher values are faster but cost more API work in parallel.").addSlider((slider) => slider.setLimits(1, 6, 1).setDynamicTooltip().setValue(this.plugin.settings.paper2mdConcurrency).onChange(async (value) => {
-      this.plugin.settings.paper2mdConcurrency = value;
+    new import_obsidian2.Setting(containerEl).setName("Paper2MDViaLLM concurrency").setDesc("Only used when the backend is Paper2MDViaLLM. Higher values are faster but cost more API work in parallel.").addSlider((slider) => slider.setLimits(1, 6, 1).setDynamicTooltip().setValue(this.plugin.settings.paper2mdviallmConcurrency).onChange(async (value) => {
+      this.plugin.settings.paper2mdviallmConcurrency = value;
       await this.plugin.saveSettings();
     }));
     new import_obsidian2.Setting(containerEl).setName("Marker CLI path").setDesc("Optional. Only used when the backend is Marker CLI, which is not recommended.").addText((text) => text.setPlaceholder("marker_single").setValue(this.plugin.settings.markerCommand).onChange(async (value) => {

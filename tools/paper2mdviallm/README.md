@@ -1,6 +1,6 @@
-# paper2md
+# paper2mdviallm
 
-`paper2md` is a Python CLI for converting digital academic PDFs into
+`paper2mdviallm` is a Python CLI for converting digital academic PDFs into
 Obsidian-friendly Markdown.
 
 It is the external conversion backend used by the Scholia Obsidian plugin, but
@@ -8,12 +8,12 @@ it can also be installed and run on its own.
 
 ## Install
 
-When `paper2md` is published to PyPI, install it into a dedicated environment:
+When `paper2mdviallm` is published to PyPI, install it into a dedicated environment:
 
 ```sh
 conda create -n scholia python=3.11
 conda activate scholia
-pip install paper2md
+pip install paper2mdviallm
 ```
 
 For local development from this repository:
@@ -40,19 +40,19 @@ The CLI reads API keys from the environment:
 Inspect a PDF before conversion:
 
 ```sh
-paper2md inspect paper.pdf
+paper2mdviallm inspect paper.pdf
 ```
 
 Convert a PDF to Markdown:
 
 ```sh
-paper2md convert paper.pdf -o out/
+paper2mdviallm convert paper.pdf -o out/
 ```
 
 Override the model or concurrency when needed:
 
 ```sh
-paper2md convert paper.pdf -o out/ --model claude-sonnet-4-6 --concurrency 3
+paper2mdviallm convert paper.pdf -o out/ --model claude-sonnet-4-6 --concurrency 3
 ```
 
 ## With Scholia
@@ -60,7 +60,7 @@ paper2md convert paper.pdf -o out/ --model claude-sonnet-4-6 --concurrency 3
 After installing into a conda environment, point Scholia at either:
 
 - the environment root, such as `/Users/me/miniconda3/envs/scholia`, or
-- the concrete executable, such as `/Users/me/miniconda3/envs/scholia/bin/paper2md`
+- the concrete executable, such as `/Users/me/miniconda3/envs/scholia/bin/paper2mdviallm`
 
 Scholia resolves the binary and executes it directly.
 
@@ -75,7 +75,7 @@ python -m pytest tests
 Bootstrap from the repo root:
 
 ```sh
-tools/paper2md/bootstrap.sh
+tools/paper2mdviallm/bootstrap.sh
 ```
 
 ## Boundaries

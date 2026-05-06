@@ -59,11 +59,11 @@ PDF import -> key sentence highlighting (optional) -> glossary preprocessing -> 
 
 The plugin currently supports three PDF import backends:
 
-- `Paper2MD` (default): LLM-native conversion path for digital academic PDFs.
+- `Paper2MDViaLLM` (default): LLM-native conversion path for digital academic PDFs.
 - `Scholar-MD` (beta): lighter local converter for text-layer PDFs.
 - `Marker CLI` (optional, not recommended): older fallback path.
 
-`Paper2MD` is the default path in the current codebase. `Scholar-MD` remains available for comparison and lighter local experiments. `Marker` is still supported, but the settings UI labels it as not recommended.
+`Paper2MDViaLLM` is the default path in the current codebase. `Scholar-MD` remains available for comparison and lighter local experiments. `Marker` is still supported, but the settings UI labels it as not recommended.
 
 ## Vault output layout
 
@@ -77,7 +77,7 @@ my-paper/
     import-quality.json
     import-warnings.md
     key-sentences.json
-    paper2md.md
+    paper2mdviallm.md
   _glossary/
     _status.md
     term-a.md
@@ -86,7 +86,7 @@ my-paper/
 
 Possible backend-specific artifacts include:
 
-- `_source/paper2md.md`
+- `_source/paper2mdviallm.md`
 - `_source/scholar-md.md`
 - `_source/scholar-md.diagnostics.json`
 
@@ -105,7 +105,7 @@ These files are meant to be inspectable. If import quality is medium or high ris
 Notes:
 
 - The plugin is desktop-only.
-- `Paper2MD` needs an API key because conversion itself is LLM-backed.
+- `Paper2MDViaLLM` needs an API key because conversion itself is LLM-backed.
 - Hover explanations, glossary generation, and key-sentence selection also use the configured provider.
 - API keys are currently stored in the plugin's Obsidian `data.json` so the plugin can stay compatible with Obsidian `1.5.0+`. If you later raise `minAppVersion`, migrating to `SecretStorage` is the cleaner review posture.
 
@@ -114,7 +114,7 @@ Notes:
 - `Scholia` makes network requests to OpenAI and/or Anthropic when you run import, glossary generation, key-sentence selection, or `Explain Term Now`.
 - SEP enrichment, when enabled, also fetches public Stanford Encyclopedia of Philosophy pages.
 - The plugin reads PDFs and Markdown files from your vault and writes derived artifacts such as Markdown notes, `_source/*`, and `_glossary/*` back into the same vault.
-- The plugin can execute user-configured local tools such as `paper2md`, `scholar-md`, or `marker_single`.
+- The plugin can execute user-configured local tools such as `paper2mdviallm`, `scholar-md`, or `marker_single`.
 - The plugin does not include telemetry or ads.
 
 ## Install for local use
@@ -150,55 +150,55 @@ npm run dev
 
 ## Optional local PDF tool setup
 
-### Paper2MD
+### Paper2MDViaLLM
 
-Recommended user flow after `paper2md` is published as a Python package:
+Recommended user flow after `paper2mdviallm` is published as a Python package:
 
 ```sh
 conda create -n scholia python=3.11
 conda activate scholia
-pip install paper2md
+pip install paper2mdviallm
 ```
 
-Then in `Settings -> Community plugins -> Scholia -> Paper2MD CLI path`, set either:
+Then in `Settings -> Community plugins -> Scholia -> Paper2MDViaLLM CLI path`, set either:
 
-- the full executable path, such as `/Users/me/miniconda3/envs/scholia/bin/paper2md`, or
+- the full executable path, such as `/Users/me/miniconda3/envs/scholia/bin/paper2mdviallm`, or
 - the environment root, such as `/Users/me/miniconda3/envs/scholia`
 
-Scholia will resolve `bin/paper2md` on macOS/Linux or `Scripts/paper2md.exe` on Windows.
+Scholia will resolve `bin/paper2mdviallm` on macOS/Linux or `Scripts/paper2mdviallm.exe` on Windows.
 
 Current contributor flow from this repository:
 
 ```sh
-tools/paper2md/bootstrap.sh
+tools/paper2mdviallm/bootstrap.sh
 ```
 
 That installs the local development CLI at:
 
 ```text
-.venv/bin/paper2md
+.venv/bin/paper2mdviallm
 ```
 
 You can then either:
 
-- leave the CLI path as `paper2md` and let Scholia resolve it from `PATH`,
-- click `Use local Paper2MD`, or
+- leave the CLI path as `paper2mdviallm` and let Scholia resolve it from `PATH`,
+- click `Use local Paper2MDViaLLM`, or
 - paste the full path manually.
 
 Conda environments work too. You can point Scholia at either:
 
-- the executable itself, such as `/Users/me/miniconda3/envs/scholia/bin/paper2md`, or
+- the executable itself, such as `/Users/me/miniconda3/envs/scholia/bin/paper2mdviallm`, or
 - the environment root, such as `/Users/me/miniconda3/envs/scholia`, and Scholia will resolve the executable inside it.
 
-On Windows, the equivalent is usually `C:\\Users\\you\\miniconda3\\envs\\scholia\\Scripts\\paper2md.exe`.
+On Windows, the equivalent is usually `C:\\Users\\you\\miniconda3\\envs\\scholia\\Scripts\\paper2mdviallm.exe`.
 
-Use a direct path, not a shell fragment like `conda run -n scholia paper2md`.
+Use a direct path, not a shell fragment like `conda run -n scholia paper2mdviallm`.
 
 The important mental model is:
 
 - `conda` manages the Python environment
-- `pip install paper2md` installs the CLI into that environment
-- Scholia directly executes the resulting `paper2md` binary
+- `pip install paper2mdviallm` installs the CLI into that environment
+- Scholia directly executes the resulting `paper2mdviallm` binary
 
 ### Scholar-MD
 
@@ -236,12 +236,12 @@ The settings tab is split into four groups.
 ### Markdown generation
 
 - `PDF import backend`
-- `Paper2MD CLI path`
+- `Paper2MDViaLLM CLI path`
 - `Markdown generation model`
-- `Paper2MD concurrency`
+- `Paper2MDViaLLM concurrency`
 - `Marker CLI path`
 
-For `Paper2MD`, provider choice is inferred from the model name. The plugin injects the global OpenAI or Anthropic API key into the CLI environment. The CLI path can be a plain executable name, a direct executable path, or a conda/venv root.
+For `Paper2MDViaLLM`, provider choice is inferred from the model name. The plugin injects the global OpenAI or Anthropic API key into the CLI environment. The CLI path can be a plain executable name, a direct executable path, or a conda/venv root.
 
 ### API keys
 
@@ -325,7 +325,7 @@ npm test
 Run the Python tool tests:
 
 ```sh
-npm run test:paper2md
+npm run test:paper2mdviallm
 npm run test:scholar-md
 ```
 
@@ -350,7 +350,7 @@ prompts/              LLM prompts for term discovery, explanation, and key sente
 tests/                Node-side tests
 docs/                 design and pipeline notes
 eval/pdf-tools/       PDF backend comparison harness
-tools/paper2md/       LLM-native PDF to Markdown CLI
+tools/paper2mdviallm/ LLM-native PDF to Markdown CLI
 tools/scholar-md/     lightweight digital PDF to Markdown CLI
 ```
 

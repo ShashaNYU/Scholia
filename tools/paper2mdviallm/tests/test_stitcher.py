@@ -1,4 +1,4 @@
-from paper2md.stitcher import renumber_footnotes, split_body_and_footnotes, stitch
+from paper2mdviallm.stitcher import renumber_footnotes, split_body_and_footnotes, stitch
 
 
 def test_split_body_and_footnotes_no_footnotes():

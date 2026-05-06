@@ -21,7 +21,7 @@ from .stitcher import stitch
 from .verifier import verify
 
 app = typer.Typer(
-    name="paper2md",
+    name="paper2mdviallm",
     help="Convert academic paper PDFs to Obsidian-compatible Markdown.",
     add_completion=False
 )
