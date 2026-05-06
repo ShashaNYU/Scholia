@@ -1697,16 +1697,26 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
     this.glossaryCache.clear();
   }
   getLocalMarkerCommand() {
-    const pluginPath = this.getPluginDiskPath();
-    return pluginPath ? path.join(pluginPath, ".venv", "bin", "marker_single") : null;
+    return this.findLocalToolCommand("marker_single");
   }
   getLocalScholarMdCommand() {
-    const pluginPath = this.getPluginDiskPath();
-    return pluginPath ? path.join(pluginPath, ".venv", "bin", "scholar-md") : null;
+    return this.findLocalToolCommand("scholar-md");
   }
   getLocalPaper2mdCommand() {
+    return this.findLocalToolCommand("paper2md");
+  }
+  findLocalToolCommand(executableBaseName) {
     const pluginPath = this.getPluginDiskPath();
-    return pluginPath ? path.join(pluginPath, ".venv", "bin", "paper2md") : null;
+    if (!pluginPath) {
+      return null;
+    }
+    const candidates = [
+      path.join(pluginPath, ".venv", "bin", executableBaseName),
+      path.join(pluginPath, ".venv", "Scripts", `${executableBaseName}.exe`),
+      path.join(pluginPath, ".venv", "Scripts", executableBaseName),
+      path.join(pluginPath, ".venv", "bin", `${executableBaseName}.exe`)
+    ];
+    return candidates.find((candidate) => fs.existsSync(candidate)) || null;
   }
   resolveScholarMdCommand() {
     const localScholarMd = this.getLocalScholarMdCommand();
@@ -1718,8 +1728,9 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
   resolvePaper2mdCommand() {
     const configured = this.settings.paper2mdCommand.trim();
     if (configured && configured !== DEFAULT_SETTINGS.paper2mdCommand) {
+      const resolvedConfigured = resolveConfiguredToolCommand(configured, "paper2md");
       return {
-        command: configured,
+        command: resolvedConfigured,
         source: looksLikeLocalPath(configured) ? "local" : "path"
       };
     }
@@ -2823,14 +2834,14 @@ var PhilosophyReaderSettingTab = class extends import_obsidian2.PluginSettingTab
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "Scholia" });
-    containerEl.createEl("h3", { text: "Markdown generation" });
+    new import_obsidian2.Setting(containerEl).setName("Scholia").setHeading();
+    new import_obsidian2.Setting(containerEl).setName("Markdown generation").setHeading();
     new import_obsidian2.Setting(containerEl).setName("PDF import backend").setDesc("Paper2MD is now the default path. Scholar-MD stays available as a lighter beta path; Marker remains optional and not recommended.").addDropdown((dropdown) => dropdown.addOption("paper2md", "Paper2MD (LLM-native)").addOption("scholar-md", "Scholar-MD (beta)").addOption("marker", "Marker CLI (not recommended)").setValue(this.plugin.settings.pdfImportBackend).onChange(async (value) => {
       const backend = value === "marker" ? "marker" : value === "paper2md" ? "paper2md" : "scholar-md";
       this.plugin.settings.pdfImportBackend = backend;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian2.Setting(containerEl).setName("Paper2MD CLI path").setDesc("Optional. Resolution order: explicit setting, plugin .venv local tool, then shell PATH. Leave as `paper2md` to use the default resolver.").addText((text) => text.setPlaceholder("paper2md").setValue(this.plugin.settings.paper2mdCommand).onChange(async (value) => {
+    new import_obsidian2.Setting(containerEl).setName("Paper2MD CLI path").setDesc("Optional. Resolution order: explicit setting, plugin .venv local tool, then shell PATH. You can paste either the executable itself or an environment root such as a conda env; Scholia will resolve `bin/paper2md` or `Scripts/paper2md.exe` inside it.").addText((text) => text.setPlaceholder("paper2md").setValue(this.plugin.settings.paper2mdCommand).onChange(async (value) => {
       this.plugin.settings.paper2mdCommand = value.trim() || DEFAULT_SETTINGS.paper2mdCommand;
       await this.plugin.saveSettings();
     })).addButton((button) => button.setButtonText("Use local Paper2MD").onClick(async () => {
@@ -2866,22 +2877,22 @@ var PhilosophyReaderSettingTab = class extends import_obsidian2.PluginSettingTab
       this.display();
       new import_obsidian2.Notice("Marker CLI path set to local marker_single.");
     }));
-    containerEl.createEl("h3", { text: "API keys" });
-    new import_obsidian2.Setting(containerEl).setName("OpenAI API key").setDesc("Stored in this plugin's Obsidian data.json.").addText((text) => {
+    new import_obsidian2.Setting(containerEl).setName("API keys").setHeading();
+    new import_obsidian2.Setting(containerEl).setName("OpenAI API key").setDesc("Stored in this plugin's Obsidian data.json for compatibility with older supported Obsidian versions.").addText((text) => {
       text.inputEl.type = "password";
       text.setPlaceholder("sk-...").setValue(this.plugin.settings.openaiApiKey).onChange(async (value) => {
         this.plugin.settings.openaiApiKey = value.trim();
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian2.Setting(containerEl).setName("Anthropic API key").setDesc("Stored in this plugin's Obsidian data.json.").addText((text) => {
+    new import_obsidian2.Setting(containerEl).setName("Anthropic API key").setDesc("Stored in this plugin's Obsidian data.json for compatibility with older supported Obsidian versions.").addText((text) => {
       text.inputEl.type = "password";
       text.setPlaceholder("sk-ant-...").setValue(this.plugin.settings.anthropicApiKey).onChange(async (value) => {
         this.plugin.settings.anthropicApiKey = value.trim();
         await this.plugin.saveSettings();
       });
     });
-    containerEl.createEl("h3", { text: "Reading prep" });
+    new import_obsidian2.Setting(containerEl).setName("Reading prep").setHeading();
     new import_obsidian2.Setting(containerEl).setName("Reading prep provider").setDesc("Used for key-sentence highlighting plus term discovery and explanation after Markdown import.").addDropdown((dropdown) => dropdown.addOption("openai", "OpenAI (GPT)").addOption("anthropic", "Anthropic (Claude)").setValue(this.plugin.settings.provider).onChange(async (value) => {
       this.plugin.settings.provider = value === "anthropic" ? "anthropic" : "openai";
       await this.plugin.saveSettings();
@@ -2903,7 +2914,7 @@ var PhilosophyReaderSettingTab = class extends import_obsidian2.PluginSettingTab
       this.plugin.settings.keySentenceDensity = value === "sparse" ? "sparse" : "medium";
       await this.plugin.saveSettings();
     }));
-    containerEl.createEl("h3", { text: "Glossary" });
+    new import_obsidian2.Setting(containerEl).setName("Glossary").setHeading();
     new import_obsidian2.Setting(containerEl).setName("Max precomputed terms").setDesc("MVP default is 40. Higher values cost more and take longer.").addSlider((slider) => slider.setLimits(10, 120, 5).setDynamicTooltip().setValue(this.plugin.settings.maxPrecomputedTerms).onChange(async (value) => {
       this.plugin.settings.maxPrecomputedTerms = value;
       await this.plugin.saveSettings();
@@ -3034,7 +3045,40 @@ function findLargestMarkdownFile(folder) {
   return files.sort((a, b) => fs.statSync(b).size - fs.statSync(a).size)[0] || null;
 }
 function looksLikeLocalPath(command) {
-  return command.includes(path.sep) || command.startsWith(`.${path.sep}`) || command.startsWith("~");
+  return command.includes("/") || command.includes("\\") || command.startsWith(`.${path.sep}`) || command.startsWith("~/") || command.startsWith("~\\");
+}
+function resolveConfiguredToolCommand(configured, executableBaseName) {
+  const expanded = expandUserHome(configured);
+  if (!looksLikeLocalPath(expanded) || !fs.existsSync(expanded)) {
+    return expanded;
+  }
+  const stat = fs.statSync(expanded);
+  if (!stat.isDirectory()) {
+    return expanded;
+  }
+  const candidates = [
+    path.join(expanded, "bin", executableBaseName),
+    path.join(expanded, "Scripts", `${executableBaseName}.exe`),
+    path.join(expanded, "Scripts", executableBaseName),
+    path.join(expanded, "bin", `${executableBaseName}.exe`)
+  ];
+  return candidates.find((candidate) => fs.existsSync(candidate)) || expanded;
+}
+function expandUserHome(inputPath) {
+  if (!inputPath.startsWith("~")) {
+    return inputPath;
+  }
+  const homeDir = process.env.HOME || process.env.USERPROFILE;
+  if (!homeDir) {
+    return inputPath;
+  }
+  if (inputPath === "~") {
+    return homeDir;
+  }
+  if (inputPath.startsWith("~/") || inputPath.startsWith("~\\")) {
+    return path.join(homeDir, inputPath.slice(2));
+  }
+  return inputPath;
 }
 function getReadingModel(settings) {
   if (settings.provider === "anthropic") {

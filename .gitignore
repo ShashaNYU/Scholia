@@ -11,3 +11,6 @@ tools/scholar-md/build/
 tools/scholar-md/*.egg-info/
 tools/scholar-md/src/*.egg-info/
 tools/scholar-md/**/__pycache__/
+tools/paper2md/*.egg-info/
+tools/paper2md/**/*.egg-info/
+tools/paper2md/**/__pycache__/

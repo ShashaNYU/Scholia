@@ -1,6 +1,6 @@
 {
   "name": "scholia",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Obsidian plugin for importing philosophy papers and precomputing hover glossary explanations.",
   "main": "main.js",
   "scripts": {
@@ -19,7 +19,7 @@
     "papers",
     "glossary"
   ],
-  "author": "",
+  "author": "s1n4sh4",
   "license": "MIT",
   "devDependencies": {
     "@codemirror/state": "6.5.0",

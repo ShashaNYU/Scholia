@@ -107,6 +107,15 @@ Notes:
 - The plugin is desktop-only.
 - `Paper2MD` needs an API key because conversion itself is LLM-backed.
 - Hover explanations, glossary generation, and key-sentence selection also use the configured provider.
+- API keys are currently stored in the plugin's Obsidian `data.json` so the plugin can stay compatible with Obsidian `1.5.0+`. If you later raise `minAppVersion`, migrating to `SecretStorage` is the cleaner review posture.
+
+## Disclosures
+
+- `Scholia` makes network requests to OpenAI and/or Anthropic when you run import, glossary generation, key-sentence selection, or `Explain Term Now`.
+- SEP enrichment, when enabled, also fetches public Stanford Encyclopedia of Philosophy pages.
+- The plugin reads PDFs and Markdown files from your vault and writes derived artifacts such as Markdown notes, `_source/*`, and `_glossary/*` back into the same vault.
+- The plugin can execute user-configured local tools such as `paper2md`, `scholar-md`, or `marker_single`.
+- The plugin does not include telemetry or ads.
 
 ## Install for local use
 
@@ -143,23 +152,53 @@ npm run dev
 
 ### Paper2MD
 
-Bootstrap the local `paper2md` CLI into the repo venv:
+Recommended user flow after `paper2md` is published as a Python package:
+
+```sh
+conda create -n scholia python=3.11
+conda activate scholia
+pip install paper2md
+```
+
+Then in `Settings -> Community plugins -> Scholia -> Paper2MD CLI path`, set either:
+
+- the full executable path, such as `/Users/me/miniconda3/envs/scholia/bin/paper2md`, or
+- the environment root, such as `/Users/me/miniconda3/envs/scholia`
+
+Scholia will resolve `bin/paper2md` on macOS/Linux or `Scripts/paper2md.exe` on Windows.
+
+Current contributor flow from this repository:
 
 ```sh
 tools/paper2md/bootstrap.sh
 ```
 
-That installs:
+That installs the local development CLI at:
 
 ```text
 .venv/bin/paper2md
 ```
 
-In plugin settings, either:
+You can then either:
 
-- leave the CLI path as `paper2md` and let the plugin resolve the local tool automatically, or
+- leave the CLI path as `paper2md` and let Scholia resolve it from `PATH`,
 - click `Use local Paper2MD`, or
 - paste the full path manually.
+
+Conda environments work too. You can point Scholia at either:
+
+- the executable itself, such as `/Users/me/miniconda3/envs/scholia/bin/paper2md`, or
+- the environment root, such as `/Users/me/miniconda3/envs/scholia`, and Scholia will resolve the executable inside it.
+
+On Windows, the equivalent is usually `C:\\Users\\you\\miniconda3\\envs\\scholia\\Scripts\\paper2md.exe`.
+
+Use a direct path, not a shell fragment like `conda run -n scholia paper2md`.
+
+The important mental model is:
+
+- `conda` manages the Python environment
+- `pip install paper2md` installs the CLI into that environment
+- Scholia directly executes the resulting `paper2md` binary
 
 ### Scholar-MD
 
@@ -202,14 +241,14 @@ The settings tab is split into four groups.
 - `Paper2MD concurrency`
 - `Marker CLI path`
 
-For `Paper2MD`, provider choice is inferred from the model name. The plugin injects the global OpenAI or Anthropic API key into the CLI environment.
+For `Paper2MD`, provider choice is inferred from the model name. The plugin injects the global OpenAI or Anthropic API key into the CLI environment. The CLI path can be a plain executable name, a direct executable path, or a conda/venv root.
 
 ### API keys
 
 - `OpenAI API key`
 - `Anthropic API key`
 
-These are stored in the plugin's Obsidian `data.json`.
+These are currently stored in the plugin's Obsidian `data.json` for compatibility with older supported Obsidian versions.
 
 ### Reading prep
 

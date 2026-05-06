@@ -294,18 +294,30 @@ export default class PhilosophyReaderPlugin extends Plugin {
   }
 
   getLocalMarkerCommand(): string | null {
-    const pluginPath = this.getPluginDiskPath();
-    return pluginPath ? path.join(pluginPath, ".venv", "bin", "marker_single") : null;
+    return this.findLocalToolCommand("marker_single");
   }
 
   getLocalScholarMdCommand(): string | null {
-    const pluginPath = this.getPluginDiskPath();
-    return pluginPath ? path.join(pluginPath, ".venv", "bin", "scholar-md") : null;
+    return this.findLocalToolCommand("scholar-md");
   }
 
   getLocalPaper2mdCommand(): string | null {
+    return this.findLocalToolCommand("paper2md");
+  }
+
+  private findLocalToolCommand(executableBaseName: string): string | null {
     const pluginPath = this.getPluginDiskPath();
-    return pluginPath ? path.join(pluginPath, ".venv", "bin", "paper2md") : null;
+    if (!pluginPath) {
+      return null;
+    }
+
+    const candidates = [
+      path.join(pluginPath, ".venv", "bin", executableBaseName),
+      path.join(pluginPath, ".venv", "Scripts", `${executableBaseName}.exe`),
+      path.join(pluginPath, ".venv", "Scripts", executableBaseName),
+      path.join(pluginPath, ".venv", "bin", `${executableBaseName}.exe`)
+    ];
+    return candidates.find((candidate) => fs.existsSync(candidate)) || null;
   }
 
   private resolveScholarMdCommand(): ResolvedCommand {
@@ -320,8 +332,9 @@ export default class PhilosophyReaderPlugin extends Plugin {
   private resolvePaper2mdCommand(): ResolvedCommand {
     const configured = this.settings.paper2mdCommand.trim();
     if (configured && configured !== DEFAULT_SETTINGS.paper2mdCommand) {
+      const resolvedConfigured = resolveConfiguredToolCommand(configured, "paper2md");
       return {
-        command: configured,
+        command: resolvedConfigured,
         source: looksLikeLocalPath(configured) ? "local" : "path"
       };
     }
@@ -1623,8 +1636,13 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    containerEl.createEl("h2", { text: "Scholia" });
-    containerEl.createEl("h3", { text: "Markdown generation" });
+    new Setting(containerEl)
+      .setName("Scholia")
+      .setHeading();
+
+    new Setting(containerEl)
+      .setName("Markdown generation")
+      .setHeading();
 
     new Setting(containerEl)
       .setName("PDF import backend")
@@ -1646,7 +1664,7 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Paper2MD CLI path")
-      .setDesc("Optional. Resolution order: explicit setting, plugin .venv local tool, then shell PATH. Leave as `paper2md` to use the default resolver.")
+      .setDesc("Optional. Resolution order: explicit setting, plugin .venv local tool, then shell PATH. You can paste either the executable itself or an environment root such as a conda env; Scholia will resolve `bin/paper2md` or `Scripts/paper2md.exe` inside it.")
       .addText((text) => text
         .setPlaceholder("paper2md")
         .setValue(this.plugin.settings.paper2mdCommand)
@@ -1715,11 +1733,13 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
           new Notice("Marker CLI path set to local marker_single.");
         }));
 
-    containerEl.createEl("h3", { text: "API keys" });
+    new Setting(containerEl)
+      .setName("API keys")
+      .setHeading();
 
     new Setting(containerEl)
       .setName("OpenAI API key")
-      .setDesc("Stored in this plugin's Obsidian data.json.")
+      .setDesc("Stored in this plugin's Obsidian data.json for compatibility with older supported Obsidian versions.")
       .addText((text) => {
         text.inputEl.type = "password";
         text
@@ -1733,7 +1753,7 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Anthropic API key")
-      .setDesc("Stored in this plugin's Obsidian data.json.")
+      .setDesc("Stored in this plugin's Obsidian data.json for compatibility with older supported Obsidian versions.")
       .addText((text) => {
         text.inputEl.type = "password";
         text
@@ -1745,7 +1765,9 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
           });
       });
 
-    containerEl.createEl("h3", { text: "Reading prep" });
+    new Setting(containerEl)
+      .setName("Reading prep")
+      .setHeading();
 
     new Setting(containerEl)
       .setName("Reading prep provider")
@@ -1797,7 +1819,9 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    containerEl.createEl("h3", { text: "Glossary" });
+    new Setting(containerEl)
+      .setName("Glossary")
+      .setHeading();
 
     new Setting(containerEl)
       .setName("Max precomputed terms")
@@ -1972,7 +1996,48 @@ function findLargestMarkdownFile(folder: string): string | null {
 }
 
 function looksLikeLocalPath(command: string): boolean {
-  return command.includes(path.sep) || command.startsWith(`.${path.sep}`) || command.startsWith("~");
+  return command.includes("/") || command.includes("\\") || command.startsWith(`.${path.sep}`) || command.startsWith("~/") || command.startsWith("~\\");
+}
+
+function resolveConfiguredToolCommand(configured: string, executableBaseName: string): string {
+  const expanded = expandUserHome(configured);
+  if (!looksLikeLocalPath(expanded) || !fs.existsSync(expanded)) {
+    return expanded;
+  }
+
+  const stat = fs.statSync(expanded);
+  if (!stat.isDirectory()) {
+    return expanded;
+  }
+
+  const candidates = [
+    path.join(expanded, "bin", executableBaseName),
+    path.join(expanded, "Scripts", `${executableBaseName}.exe`),
+    path.join(expanded, "Scripts", executableBaseName),
+    path.join(expanded, "bin", `${executableBaseName}.exe`)
+  ];
+  return candidates.find((candidate) => fs.existsSync(candidate)) || expanded;
+}
+
+function expandUserHome(inputPath: string): string {
+  if (!inputPath.startsWith("~")) {
+    return inputPath;
+  }
+
+  const homeDir = process.env.HOME || process.env.USERPROFILE;
+  if (!homeDir) {
+    return inputPath;
+  }
+
+  if (inputPath === "~") {
+    return homeDir;
+  }
+
+  if (inputPath.startsWith("~/") || inputPath.startsWith("~\\")) {
+    return path.join(homeDir, inputPath.slice(2));
+  }
+
+  return inputPath;
 }
 
 function getReadingModel(settings: PhilosophyReaderSettings): string {

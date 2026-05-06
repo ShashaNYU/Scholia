@@ -6,9 +6,19 @@ build-backend = "setuptools.build_meta"
 name = "paper2md"
 version = "0.1.0"
 description = "LLM-native academic PDF to Obsidian Markdown converter."
+readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "Scholia" }]
+authors = [{ name = "s1n4sh4" }]
+keywords = ["pdf", "markdown", "obsidian", "llm", "academic"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Text Processing :: Markup :: Markdown",
+  "Topic :: Utilities"
+]
 dependencies = [
   "anthropic>=0.40.0",
   "openai>=1.0.0",

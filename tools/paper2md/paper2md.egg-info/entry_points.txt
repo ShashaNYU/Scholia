@@ -1,2 +1,0 @@
-[console_scripts]
-paper2md = paper2md.cli:app
