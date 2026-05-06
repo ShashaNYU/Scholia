@@ -1017,7 +1017,7 @@ var AnthropicProvider = class extends BaseProvider {
     });
     if (response.status < 200 || response.status >= 300) {
       if (response.status === 404 && response.text.includes("not_found_error")) {
-        throw new Error(`Anthropic model is not available for this API key: ${this.model}. Change the model in Philosophy Reader settings.`);
+        throw new Error(`Anthropic model is not available for this API key: ${this.model}. Change the model in Scholia settings.`);
       }
       throw new Error(`Anthropic request failed (${response.status}): ${response.text.slice(0, 400)}`);
     }
@@ -1058,7 +1058,7 @@ var AnthropicProvider = class extends BaseProvider {
     });
     if (response.status < 200 || response.status >= 300) {
       if (response.status === 404 && response.text.includes("not_found_error")) {
-        throw new Error(`Anthropic model is not available for this API key: ${this.model}. Try claude-3-5-sonnet-latest or change the model in Philosophy Reader settings.`);
+        throw new Error(`Anthropic model is not available for this API key: ${this.model}. Try claude-3-5-sonnet-latest or change the model in Scholia settings.`);
       }
       throw new Error(`Anthropic request failed (${response.status}): ${response.text.slice(0, 400)}`);
     }
@@ -1244,7 +1244,7 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
     this.registerContextMenuActions();
     this.addCommand({
       id: "import-pdf-as-philosophy-paper",
-      name: "Import PDF and Prepare for Reading",
+      name: "Scholia: Import PDF and Prepare for Reading",
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
         const canRun = file instanceof import_obsidian2.TFile && file.extension.toLowerCase() === "pdf";
@@ -1259,7 +1259,7 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
     });
     this.addCommand({
       id: "convert-current-pdf-to-markdown",
-      name: "Convert Current PDF to Markdown Only",
+      name: "Scholia: Convert Current PDF to Markdown Only",
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
         const canRun = file instanceof import_obsidian2.TFile && file.extension.toLowerCase() === "pdf";
@@ -1274,7 +1274,7 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
     });
     this.addCommand({
       id: "rebuild-glossary-for-current-paper",
-      name: "Rebuild Glossary for Current Paper",
+      name: "Scholia: Rebuild Glossary for Current Paper",
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
         const canRun = file instanceof import_obsidian2.TFile && file.extension.toLowerCase() === "md";
@@ -1289,7 +1289,7 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
     });
     this.addCommand({
       id: "extract-terms-and-explain-current-markdown",
-      name: "Extract Terms and Explain from Current Markdown",
+      name: "Scholia: Extract Terms and Explain from Current Markdown",
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
         const canRun = file instanceof import_obsidian2.TFile && file.extension.toLowerCase() === "md";
@@ -1304,7 +1304,7 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
     });
     this.addCommand({
       id: "highlight-key-sentences-for-current-paper",
-      name: "Highlight Key Sentences for Current Paper",
+      name: "Scholia: Highlight Key Sentences for Current Paper",
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
         const canRun = file instanceof import_obsidian2.TFile && file.extension.toLowerCase() === "md";
@@ -1319,7 +1319,7 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
     });
     this.addCommand({
       id: "explain-term-now",
-      name: "Explain Term Now",
+      name: "Scholia: Explain Term Now",
       editorCheckCallback: (checking, editor, view) => {
         const file = view.file;
         const selection = editor.getSelection().trim();
@@ -1512,7 +1512,7 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
     try {
       const precomputeGlossary = options.precomputeGlossary !== false;
       if (this.settings.pdfImportBackend === "marker" && !this.settings.markerCommand.trim()) {
-        new import_obsidian2.Notice("Set the Marker CLI path in Philosophy Reader settings first.");
+        new import_obsidian2.Notice("Set the Marker CLI path in Scholia settings first.");
         return;
       }
       const scholarMdCommand = this.resolveScholarMdCommand();
@@ -1586,7 +1586,7 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
     if (!usingOpenAI && !this.settings.anthropicApiKey.trim()) {
       throw new Error("Paper2MD is configured with an Anthropic model, but the Anthropic API key is empty.");
     }
-    this.setStatus("Philosophy Reader: converting PDF with Paper2MD...");
+    this.setStatus("Scholia: converting PDF with Paper2MD...");
     const commandLabel = resolvedCommand.source === "local" ? "local Paper2MD" : "Paper2MD";
     new import_obsidian2.Notice(`Converting PDF with ${commandLabel}...`);
     const outputDir = path.join(adapter.getFullPath(paperFolder), ".paper2md-output");
@@ -1655,7 +1655,7 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
     return importedMarkdown;
   }
   async convertPdfWithScholarMd(pdfAbsPath, paperFolder, paperTitle, sourcePdfPath, adapter, resolvedCommand) {
-    this.setStatus("Philosophy Reader: converting PDF with Scholar-MD...");
+    this.setStatus("Scholia: converting PDF with Scholar-MD...");
     const commandLabel = resolvedCommand.source === "local" ? "local Scholar-MD" : "Scholar-MD";
     new import_obsidian2.Notice(`Converting PDF with ${commandLabel} (beta)...`);
     const outputDir = path.join(adapter.getFullPath(paperFolder), ".scholar-md-output");
@@ -1722,7 +1722,7 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
     return importedMarkdown;
   }
   async convertPdfWithMarker(pdfAbsPath, paperFolder, adapter) {
-    this.setStatus("Philosophy Reader: converting PDF with Marker...");
+    this.setStatus("Scholia: converting PDF with Marker...");
     new import_obsidian2.Notice("Converting PDF with Marker...");
     const outputDir = path.join(adapter.getFullPath(paperFolder), ".marker-output");
     if (fs.existsSync(outputDir)) {
@@ -1809,7 +1809,7 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
         const rangeStart = processed + 1;
         const rangeEnd = processed + batch.length;
         processed += batch.length;
-        this.setStatus(`Philosophy Reader: selecting key sentences ${rangeStart}-${rangeEnd}/${candidates.length}`);
+        this.setStatus(`Scholia: selecting key sentences ${rangeStart}-${rangeEnd}/${candidates.length}`);
         const selections = await provider.selectKeySentences({
           paperTitle: (0, import_core2.getBaseName)(file.path),
           sourcePaper: file.path,
@@ -1882,7 +1882,7 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
       const windows = (0, import_core2.buildParagraphWindows)(paragraphs, this.settings.windowSize, this.settings.windowOverlap);
       const discovered = [];
       for (let index = 0; index < windows.length; index += 1) {
-        this.setStatus(`Philosophy Reader: discovering terms ${index + 1}/${windows.length}`);
+        this.setStatus(`Scholia: discovering terms ${index + 1}/${windows.length}`);
         const terms = await provider.discoverTerms({
           paperTitle: (0, import_core2.getBaseName)(file.path),
           sourcePaper: file.path,
@@ -1912,7 +1912,7 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
       const batches = chunk(inputs, EXPLANATION_BATCH_SIZE);
       let completed = 0;
       for (const batch of batches) {
-        this.setStatus(`Philosophy Reader: explaining terms ${completed + 1}-${completed + batch.length}/${inputs.length}`);
+        this.setStatus(`Scholia: explaining terms ${completed + 1}-${completed + batch.length}/${inputs.length}`);
         const explanations = await provider.explainTerms({
           paperTitle: (0, import_core2.getBaseName)(file.path),
           sourcePaper: file.path,
@@ -2208,7 +2208,7 @@ var PhilosophyReaderSettingTab = class extends import_obsidian2.PluginSettingTab
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "Philosophy Reader" });
+    containerEl.createEl("h2", { text: "Scholia" });
     containerEl.createEl("h3", { text: "Markdown generation" });
     new import_obsidian2.Setting(containerEl).setName("PDF import backend").setDesc("Paper2MD is now the default path. Scholar-MD stays available as a lighter beta path; Marker remains optional and not recommended.").addDropdown((dropdown) => dropdown.addOption("paper2md", "Paper2MD (LLM-native)").addOption("scholar-md", "Scholar-MD (beta)").addOption("marker", "Marker CLI (not recommended)").setValue(this.plugin.settings.pdfImportBackend).onChange(async (value) => {
       const backend = value === "marker" ? "marker" : value === "paper2md" ? "paper2md" : "scholar-md";

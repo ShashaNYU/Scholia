@@ -138,7 +138,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
 
     this.addCommand({
       id: "import-pdf-as-philosophy-paper",
-      name: "Import PDF and Prepare for Reading",
+      name: "Scholia: Import PDF and Prepare for Reading",
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
         const canRun = file instanceof TFile && file.extension.toLowerCase() === "pdf";
@@ -154,7 +154,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
 
     this.addCommand({
       id: "convert-current-pdf-to-markdown",
-      name: "Convert Current PDF to Markdown Only",
+      name: "Scholia: Convert Current PDF to Markdown Only",
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
         const canRun = file instanceof TFile && file.extension.toLowerCase() === "pdf";
@@ -170,7 +170,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
 
     this.addCommand({
       id: "rebuild-glossary-for-current-paper",
-      name: "Rebuild Glossary for Current Paper",
+      name: "Scholia: Rebuild Glossary for Current Paper",
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
         const canRun = file instanceof TFile && file.extension.toLowerCase() === "md";
@@ -186,7 +186,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
 
     this.addCommand({
       id: "extract-terms-and-explain-current-markdown",
-      name: "Extract Terms and Explain from Current Markdown",
+      name: "Scholia: Extract Terms and Explain from Current Markdown",
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
         const canRun = file instanceof TFile && file.extension.toLowerCase() === "md";
@@ -202,7 +202,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
 
     this.addCommand({
       id: "highlight-key-sentences-for-current-paper",
-      name: "Highlight Key Sentences for Current Paper",
+      name: "Scholia: Highlight Key Sentences for Current Paper",
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
         const canRun = file instanceof TFile && file.extension.toLowerCase() === "md";
@@ -218,7 +218,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
 
     this.addCommand({
       id: "explain-term-now",
-      name: "Explain Term Now",
+      name: "Scholia: Explain Term Now",
       editorCheckCallback: (checking, editor, view) => {
         const file = view.file;
         const selection = editor.getSelection().trim();
@@ -462,7 +462,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
     try {
       const precomputeGlossary = options.precomputeGlossary !== false;
       if (this.settings.pdfImportBackend === "marker" && !this.settings.markerCommand.trim()) {
-        new Notice("Set the Marker CLI path in Philosophy Reader settings first.");
+        new Notice("Set the Marker CLI path in Scholia settings first.");
         return;
       }
       const scholarMdCommand = this.resolveScholarMdCommand();
@@ -560,7 +560,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
       throw new Error("Paper2MD is configured with an Anthropic model, but the Anthropic API key is empty.");
     }
 
-    this.setStatus("Philosophy Reader: converting PDF with Paper2MD...");
+    this.setStatus("Scholia: converting PDF with Paper2MD...");
     const commandLabel = resolvedCommand.source === "local" ? "local Paper2MD" : "Paper2MD";
     new Notice(`Converting PDF with ${commandLabel}...`);
 
@@ -641,7 +641,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
     adapter: FileSystemAdapter,
     resolvedCommand: ResolvedCommand
   ): Promise<string> {
-    this.setStatus("Philosophy Reader: converting PDF with Scholar-MD...");
+    this.setStatus("Scholia: converting PDF with Scholar-MD...");
     const commandLabel = resolvedCommand.source === "local" ? "local Scholar-MD" : "Scholar-MD";
     new Notice(`Converting PDF with ${commandLabel} (beta)...`);
 
@@ -713,7 +713,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
   }
 
   private async convertPdfWithMarker(pdfAbsPath: string, paperFolder: string, adapter: FileSystemAdapter): Promise<string> {
-    this.setStatus("Philosophy Reader: converting PDF with Marker...");
+    this.setStatus("Scholia: converting PDF with Marker...");
     new Notice("Converting PDF with Marker...");
     const outputDir = path.join(adapter.getFullPath(paperFolder), ".marker-output");
     if (fs.existsSync(outputDir)) {
@@ -809,7 +809,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
         const rangeStart = processed + 1;
         const rangeEnd = processed + batch.length;
         processed += batch.length;
-        this.setStatus(`Philosophy Reader: selecting key sentences ${rangeStart}-${rangeEnd}/${candidates.length}`);
+        this.setStatus(`Scholia: selecting key sentences ${rangeStart}-${rangeEnd}/${candidates.length}`);
 
         const selections = await provider.selectKeySentences({
           paperTitle: getBaseName(file.path),
@@ -890,7 +890,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
       const discovered: TermCandidate[] = [];
 
       for (let index = 0; index < windows.length; index += 1) {
-        this.setStatus(`Philosophy Reader: discovering terms ${index + 1}/${windows.length}`);
+        this.setStatus(`Scholia: discovering terms ${index + 1}/${windows.length}`);
         const terms = await provider.discoverTerms({
           paperTitle: getBaseName(file.path),
           sourcePaper: file.path,
@@ -924,7 +924,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
       let completed = 0;
 
       for (const batch of batches) {
-        this.setStatus(`Philosophy Reader: explaining terms ${completed + 1}-${completed + batch.length}/${inputs.length}`);
+        this.setStatus(`Scholia: explaining terms ${completed + 1}-${completed + batch.length}/${inputs.length}`);
         const explanations = await provider.explainTerms({
           paperTitle: getBaseName(file.path),
           sourcePaper: file.path,
@@ -1268,7 +1268,7 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    containerEl.createEl("h2", { text: "Philosophy Reader" });
+    containerEl.createEl("h2", { text: "Scholia" });
     containerEl.createEl("h3", { text: "Markdown generation" });
 
     new Setting(containerEl)

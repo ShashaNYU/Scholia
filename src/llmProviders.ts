@@ -285,7 +285,7 @@ class AnthropicProvider extends BaseProvider {
 
     if (response.status < 200 || response.status >= 300) {
       if (response.status === 404 && response.text.includes("not_found_error")) {
-        throw new Error(`Anthropic model is not available for this API key: ${this.model}. Change the model in Philosophy Reader settings.`);
+        throw new Error(`Anthropic model is not available for this API key: ${this.model}. Change the model in Scholia settings.`);
       }
       throw new Error(`Anthropic request failed (${response.status}): ${response.text.slice(0, 400)}`);
     }
@@ -330,7 +330,7 @@ class AnthropicProvider extends BaseProvider {
 
     if (response.status < 200 || response.status >= 300) {
       if (response.status === 404 && response.text.includes("not_found_error")) {
-        throw new Error(`Anthropic model is not available for this API key: ${this.model}. Try claude-3-5-sonnet-latest or change the model in Philosophy Reader settings.`);
+        throw new Error(`Anthropic model is not available for this API key: ${this.model}. Try claude-3-5-sonnet-latest or change the model in Scholia settings.`);
       }
       throw new Error(`Anthropic request failed (${response.status}): ${response.text.slice(0, 400)}`);
     }

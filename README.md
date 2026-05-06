@@ -1,8 +1,26 @@
-# Philosophy Reader
+# Scholia
 
 An Obsidian desktop plugin for importing academic PDFs, preparing them for close reading, and serving cached glossary explanations on hover.
 
-The core workflow is:
+## How to use it
+
+The main entrypoint is Obsidian's Command Palette:
+
+1. Open Obsidian.
+2. Press `Cmd+P` on macOS or `Ctrl+P` on Windows/Linux.
+3. Type `Scholia`.
+4. Pick the action you want.
+
+The most important commands are:
+
+- `Scholia: Import PDF and Prepare for Reading`
+- `Scholia: Convert Current PDF to Markdown Only`
+- `Scholia: Rebuild Glossary for Current Paper`
+- `Scholia: Extract Terms and Explain from Current Markdown`
+- `Scholia: Highlight Key Sentences for Current Paper`
+- `Scholia: Explain Term Now`
+
+If you just want the normal workflow, use:
 
 1. Convert a digital PDF into Markdown.
 2. Optionally highlight key sentences.
@@ -11,7 +29,7 @@ The core workflow is:
 
 This plugin is designed for text-layer PDFs such as philosophy, logic, and adjacent humanities papers. Scanned OCR-heavy documents are out of scope for the current MVP.
 
-## What it does
+## What Scholia does
 
 - Imports a PDF into a per-paper folder inside your vault.
 - Converts the PDF to Markdown with a configurable backend.
@@ -24,7 +42,7 @@ This plugin is designed for text-layer PDFs such as philosophy, logic, and adjac
 
 ## Reading model
 
-Philosophy Reader is intentionally cache-first:
+Scholia is intentionally cache-first:
 
 - Hover does not call the LLM live.
 - Term discovery and explanation happen after import.
@@ -105,7 +123,15 @@ After that:
 
 1. Open Obsidian.
 2. Go to `Settings -> Community plugins`.
-3. Enable `Philosophy Reader`.
+3. Enable `Scholia`.
+
+Then the normal usage pattern is:
+
+1. Open a PDF in your vault.
+2. Press `Cmd+P` or `Ctrl+P`.
+3. Type `Scholia`.
+4. Choose `Scholia: Import PDF and Prepare for Reading`.
+5. Open the generated Markdown note and hover on prepared terms.
 
 If you are actively developing, use:
 
@@ -203,25 +229,12 @@ This controls post-import prep: key-sentence selection plus glossary discovery a
 
 Glossary entries are written as Markdown files inside the paper folder, not hidden plugin storage.
 
-## Commands
-
-The plugin currently exposes these commands:
-
-- `Import PDF and Prepare for Reading`
-- `Convert Current PDF to Markdown Only`
-- `Rebuild Glossary for Current Paper`
-- `Extract Terms and Explain from Current Markdown`
-- `Highlight Key Sentences for Current Paper`
-- `Explain Term Now`
-
-There are also matching context-menu actions for PDF and Markdown files.
-
 ## Typical workflow
 
 ### One-click reading prep
 
 1. Open a PDF in Obsidian.
-2. Run `Import PDF and Prepare for Reading`.
+2. Press `Cmd+P` or `Ctrl+P`, type `Scholia`, and run `Scholia: Import PDF and Prepare for Reading`.
 3. Wait for background preprocessing to finish.
 4. Open the generated Markdown note.
 5. Hover over prepared terms to read cached explanations.
@@ -229,14 +242,14 @@ There are also matching context-menu actions for PDF and Markdown files.
 ### Markdown-only import
 
 1. Open a PDF.
-2. Run `Convert Current PDF to Markdown Only`.
+2. Press `Cmd+P` or `Ctrl+P`, type `Scholia`, and run `Scholia: Convert Current PDF to Markdown Only`.
 3. Inspect the note and `_source/import-warnings.md`.
-4. Run `Extract Terms and Explain from Current Markdown` when ready.
+4. Run `Scholia: Extract Terms and Explain from Current Markdown` when ready.
 
 ### Manual term explanation
 
 1. Select a term in a Markdown note.
-2. Run `Explain Term Now`.
+2. Press `Cmd+P` or `Ctrl+P`, type `Scholia`, and run `Scholia: Explain Term Now`.
 3. The plugin writes a glossary note and future hovers use the cached result.
 
 ## Key sentence highlighting
