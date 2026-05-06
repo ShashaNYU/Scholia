@@ -57,6 +57,20 @@ export interface ContextCluster {
   usageNote?: string;
 }
 
+export type SepStatus = "matched" | "not_found" | "failed";
+
+export interface SepEntryData {
+  status: SepStatus;
+  query: string;
+  entryTitle: string;
+  entryUrl: string;
+  summary: string;
+  sourceExcerpt: string;
+  revised: string;
+  fetchedAt: string;
+  error?: string;
+}
+
 export interface GlossaryEntry {
   term: string;
   normalizedTerm: string;
@@ -68,6 +82,7 @@ export interface GlossaryEntry {
   updated: string;
   definition: string;
   clusters: ContextCluster[];
+  sep?: SepEntryData | null;
   sep_enabled?: boolean;
 }
 

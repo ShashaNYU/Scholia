@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "LLM-native academic PDF to Obsidian Markdown converter."
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "Philosophy Reader" }]
+authors = [{ name = "Scholia" }]
 dependencies = [
   "anthropic>=0.40.0",
   "openai>=1.0.0",

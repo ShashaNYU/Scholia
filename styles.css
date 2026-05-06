@@ -1,4 +1,4 @@
-.philosophy-reader-tooltip {
+.scholia-tooltip {
   max-width: 420px;
   padding: 10px 12px;
   border: 1px solid var(--background-modifier-border);
@@ -10,17 +10,17 @@
   line-height: 1.45;
 }
 
-.philosophy-reader-tooltip h4 {
+.scholia-tooltip h4 {
   margin: 0 0 6px;
   font-size: 14px;
   line-height: 1.3;
 }
 
-.philosophy-reader-tooltip p {
+.scholia-tooltip p {
   margin: 6px 0;
 }
 
-.philosophy-reader-tooltip .philosophy-reader-label {
+.scholia-tooltip .scholia-label {
   margin-top: 8px;
   color: var(--text-muted);
   font-size: 11px;
@@ -29,14 +29,14 @@
   text-transform: uppercase;
 }
 
-.philosophy-reader-tooltip .philosophy-reader-empty {
+.scholia-tooltip .scholia-empty {
   color: var(--text-muted);
 }
 
-.philosophy-reader-tooltip button {
+.scholia-tooltip button {
   margin-top: 8px;
 }
 
-.philosophy-reader-progress {
+.scholia-progress {
   color: var(--text-muted);
 }

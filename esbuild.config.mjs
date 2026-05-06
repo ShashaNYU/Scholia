@@ -5,7 +5,7 @@ const prod = process.argv[2] === "production";
 
 const context = await esbuild.context({
   banner: {
-    js: "/* Philosophy Reader */"
+    js: "/* Scholia */"
   },
   entryPoints: ["src/main.ts"],
   bundle: true,

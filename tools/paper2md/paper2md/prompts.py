@@ -18,15 +18,22 @@ PROHIBITED: any rewriting, summarizing, translating, paraphrasing, or omission.
 - Formula numbering: \\tag{1} inside $$...$$
 - Greek letters and operators: prefer LaTeX commands (\\alpha, \\sum, \\int);
   keep Unicode only if the original uses plain-text symbols
+- If a formula contains square brackets, keep them literal inside math mode;
+  do not escape them as \\[ or \\]
 
 ## 3. Bracket Escaping (Obsidian compatibility)
-- In body text, replace all [ with \\[ and all ] with \\]
-- Exceptions: leave unchanged inside math mode, code, Markdown links,
-  YAML frontmatter, and footnote syntax [^id]
+- Escape square brackets only when they are literal prose brackets or
+  bibliographic citations such as [1] or [2, ch. 3] in running text
+- Do not blindly escape every [ or ] character
+- Never escape brackets inside math mode, code, Markdown links, Obsidian
+  wikilinks [[...]], YAML frontmatter, or footnote syntax [^id]
+- Never use LaTeX display delimiters \\[ ... \\]; use $$...$$ instead
 
 ## 4. Footnote Handling
 - Replace inline footnote markers (superscript digits, *, †, ‡, §, etc.)
   with [^fn1], [^fn2], ...
+- Use the exact syntax [^fnN] in the body and [^fnN]: ... in the footnote list
+- Never backslash-escape any part of footnote syntax
 - Do not expand footnote content inline; collect all definitions at the
   end of your output under a ## Footnotes section
 - Append an Obsidian block identifier to each definition: ^fn-N
@@ -63,6 +70,7 @@ document in a code fence.
 - [ ] All [ ] escaped where required
 - [ ] All formulas wrapped in $ or $$
 - [ ] All footnotes collected at end with ^fn-N block identifiers
+- [ ] No escaped footnote syntax like \\[^fn1\\] or \\[^fn1\\]:
 - [ ] No publication metadata, copyright notices, or page numbers
 - [ ] No image reference syntax anywhere
 - [ ] Word count roughly matches the original

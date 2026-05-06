@@ -9,7 +9,7 @@ description = "Digital academic PDF to Obsidian-compatible Markdown converter."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "Philosophy Reader" }]
+authors = [{ name = "Scholia" }]
 dependencies = [
   "PyMuPDF>=1.24.0"
 ]

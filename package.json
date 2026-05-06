@@ -1,5 +1,5 @@
 {
-  "name": "philosophy-reader",
+  "name": "scholia",
   "version": "0.1.0",
   "description": "Obsidian plugin for importing philosophy papers and precomputing hover glossary explanations.",
   "main": "main.js",

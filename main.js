@@ -1,4 +1,4 @@
-/* Philosophy Reader */
+/* Scholia */
 "use strict";
 var __create = Object.create;
 var __defProp = Object.defineProperty;
@@ -584,6 +584,8 @@ var require_core = __commonJS({
     function buildGlossaryMarkdown2(entry) {
       const clusters = Array.isArray(entry.clusters) ? entry.clusters : [];
       const aliases = Array.isArray(entry.aliases) ? entry.aliases : [];
+      const sep2 = normalizeSepEntry(entry.sep);
+      const sepEnabled = sep2 ? sep2.status === "matched" : Boolean(entry.sep_enabled);
       const frontmatter = {
         term: entry.term,
         normalizedTerm: normalizeTerm2(entry.term),
@@ -594,7 +596,8 @@ var require_core = __commonJS({
         created: entry.created || (/* @__PURE__ */ new Date()).toISOString(),
         updated: entry.updated || (/* @__PURE__ */ new Date()).toISOString(),
         definition: entry.definition || "",
-        sep_enabled: false,
+        sep_enabled: sepEnabled,
+        ...sep2 ? { sep: sep2 } : {},
         clusters
       };
       const frontmatterText = Object.entries(frontmatter).map(([key, value]) => `${key}: ${yamlScalar(value)}`).join("\n");
@@ -604,17 +607,33 @@ var require_core = __commonJS({
 
 ${note || "No passage-specific note generated yet."}`;
       }).join("\n\n");
-      return `---
+      const sections = [
+        `---
 ${frontmatterText}
----
-
-# ${entry.term}
-
-${entry.definition || ""}
-
-## Usage notes
-
-${usageNotes}
+---`,
+        `# ${entry.term}`,
+        entry.definition || ""
+      ];
+      if (sep2) {
+        sections.push("## SEP");
+        if (sep2.status === "matched") {
+          sections.push(sep2.summary || "SEP summary cached but empty.");
+          if (sep2.entryUrl) {
+            const label = sep2.entryTitle || "SEP entry";
+            sections.push(`Source: [${label}](${sep2.entryUrl})`);
+          }
+          if (sep2.revised) {
+            sections.push(`Revised: ${sep2.revised}`);
+          }
+        } else if (sep2.status === "not_found") {
+          sections.push("No SEP entry matched this term.");
+        } else {
+          sections.push(`SEP enrichment failed.${sep2.error ? ` ${sep2.error}` : ""}`.trim());
+        }
+      }
+      sections.push("## Usage notes");
+      sections.push(usageNotes);
+      return `${sections.join("\n\n")}
 `;
     }
     function parseGlossaryMarkdown2(markdown) {
@@ -633,6 +652,7 @@ ${usageNotes}
       if (!data.term && !data.normalizedTerm) {
         return null;
       }
+      const sep2 = normalizeSepEntry(data.sep);
       return {
         term: data.term || data.normalizedTerm,
         normalizedTerm: data.normalizedTerm || normalizeTerm2(data.term),
@@ -644,7 +664,28 @@ ${usageNotes}
         updated: data.updated || "",
         definition: data.definition || "",
         clusters: Array.isArray(data.clusters) ? data.clusters : [],
-        sep_enabled: Boolean(data.sep_enabled)
+        sep: sep2,
+        sep_enabled: sep2 ? sep2.status === "matched" : Boolean(data.sep_enabled)
+      };
+    }
+    function normalizeSepEntry(value) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return null;
+      }
+      const status = String(value.status || "").trim();
+      if (!status) {
+        return null;
+      }
+      return {
+        status: status === "matched" || status === "not_found" || status === "failed" ? status : "failed",
+        query: String(value.query || ""),
+        entryTitle: String(value.entryTitle || ""),
+        entryUrl: String(value.entryUrl || ""),
+        summary: String(value.summary || ""),
+        sourceExcerpt: String(value.sourceExcerpt || ""),
+        revised: String(value.revised || ""),
+        fetchedAt: String(value.fetchedAt || ""),
+        error: String(value.error || "")
       };
     }
     function collectEntryTerms(entry) {
@@ -781,6 +822,231 @@ ${usageNotes}
   }
 });
 
+// src/sep.js
+var require_sep = __commonJS({
+  "src/sep.js"(exports, module2) {
+    "use strict";
+    var { normalizeTerm: normalizeTerm2 } = require_core();
+    var SEP_SEARCH_ENDPOINT = "https://plato.stanford.edu/searcher.py";
+    var SEP_ENTRY_SUFFIX = /^https:\/\/plato\.stanford\.edu\/entries\/.+\/$/;
+    var SEP_RESULT_LIMIT = 5;
+    var SEP_DISAMBIGUATION_LIMIT = 3;
+    var SEP_CLEAR_SCORE = 90;
+    var SEP_CLEAR_SCORE_GAP = 15;
+    async function requestSepText(url) {
+      const { requestUrl: requestUrl2 } = require("obsidian");
+      const response = await requestUrl2({
+        url,
+        method: "GET",
+        throw: false,
+        headers: {
+          Accept: "text/html,application/xhtml+xml"
+        }
+      });
+      if (response.status < 200 || response.status >= 300) {
+        throw new Error(`SEP request failed (${response.status}): ${String(response.text || "").slice(0, 280)}`);
+      }
+      return String(response.text || "");
+    }
+    async function searchSep2(query) {
+      const html = await requestSepText(`${SEP_SEARCH_ENDPOINT}?query=${encodeURIComponent(String(query || "").trim())}`);
+      return parseSepSearchResults(html).slice(0, SEP_RESULT_LIMIT);
+    }
+    async function fetchSepEntry2(url) {
+      const html = await requestSepText(url);
+      return parseSepEntryHtml(html, url);
+    }
+    function parseSepSearchResults(html) {
+      const source = String(html || "");
+      if (!source.trim() || /No documents found/.test(source)) {
+        return [];
+      }
+      const blocks = source.match(/<div class="result_listing">[\s\S]*?<\/div><!-- end result_listing -->/g) || [];
+      const results = [];
+      for (const block of blocks) {
+        const titleHtml = firstCapture(block, /<div class="result_title">\s*<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/i, 2);
+        const titleHref = firstCapture(block, /<div class="result_title">\s*<a[^>]*href="([^"]+)"[^>]*>/i, 1);
+        const resultUrl = stripHtml(firstCapture(block, /<div class="result_url">\s*<a[^>]*>([\s\S]*?)<\/a>/i, 1));
+        const snippet = stripHtml(firstCapture(block, /<div class="result_snippet">\s*([\s\S]*?)<\/div><!-- end result_snippet -->/i, 1));
+        const title = stripHtml(titleHtml);
+        const url = canonicalizeSepUrl(resultUrl, titleHref);
+        if (!title || !url) {
+          continue;
+        }
+        results.push({
+          title,
+          url,
+          snippet,
+          normalizedTitle: normalizeTerm2(title)
+        });
+      }
+      return results;
+    }
+    function parseSepEntryHtml(html, sourceUrl = "") {
+      const source = String(html || "");
+      const title = stripHtml(firstCapture(source, /<h1[^>]*>([\s\S]*?)<\/h1>/i, 1));
+      const preambleHtml = firstCapture(
+        source,
+        /<div id="preamble">([\s\S]*?)<\/div>\s*(?:<div id="toc">|<\/div>\s*<div id="toc">)/i,
+        1
+      ) || firstCapture(source, /<div id="preamble">([\s\S]*?)<\/div>/i, 1);
+      const paragraphs = Array.from(preambleHtml.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/gi), (match) => stripHtml(match[1])).map((paragraph) => paragraph.trim()).filter(Boolean);
+      const revised = firstCapture(source, /<meta name="DCTERMS\.modified" content="([^"]+)"/i, 1) || firstCapture(source, /<meta property="citation_publication_date" content="([^"]+)"/i, 1) || "";
+      const preamble = paragraphs.join("\n\n").trim();
+      const sourceExcerpt = paragraphs.slice(0, 2).join("\n\n").trim() || preamble;
+      return {
+        title,
+        sourceUrl: sanitizeSepUrl(sourceUrl),
+        revised,
+        paragraphs,
+        preamble,
+        sourceExcerpt
+      };
+    }
+    function rankSepCandidates(candidates, term, aliases) {
+      return (Array.isArray(candidates) ? candidates : []).map((candidate) => ({
+        ...candidate,
+        score: scoreSepCandidate(candidate, term, aliases)
+      })).sort((left, right) => {
+        if (right.score !== left.score) {
+          return right.score - left.score;
+        }
+        return left.title.localeCompare(right.title);
+      });
+    }
+    function pickSepCandidateHeuristically2(candidates, term, aliases) {
+      const ranked = rankSepCandidates(candidates, term, aliases);
+      const best = ranked[0] || null;
+      const second = ranked[1] || null;
+      const exactMatch = best && isExactSepTitleMatch(best, term, aliases);
+      const clearWinner = best && best.score >= SEP_CLEAR_SCORE && (!second || best.score - second.score >= SEP_CLEAR_SCORE_GAP);
+      return {
+        candidate: exactMatch || clearWinner ? best : null,
+        candidates: ranked.slice(0, SEP_DISAMBIGUATION_LIMIT)
+      };
+    }
+    function scoreSepCandidate(candidate, term, aliases) {
+      const title = normalizeTerm2(candidate && candidate.title);
+      const snippet = normalizeTerm2(candidate && candidate.snippet);
+      const url = normalizeTerm2(urlSlug(candidate && candidate.url));
+      const queries = uniqueNormalizedTerms([term, ...Array.isArray(aliases) ? aliases : []]);
+      let score = 0;
+      for (const query of queries) {
+        if (!query) {
+          continue;
+        }
+        if (title === query) {
+          score = Math.max(score, 120);
+          continue;
+        }
+        if (title.startsWith(`${query} `) || title.endsWith(` ${query}`)) {
+          score = Math.max(score, 100);
+        }
+        if (title.includes(query)) {
+          score = Math.max(score, 90);
+        }
+        if (url === query || url.includes(query.replace(/\s+/g, "-"))) {
+          score = Math.max(score, 88);
+        }
+        if (containsAllWords(title, query)) {
+          score = Math.max(score, 78);
+        }
+        if (containsAllWords(url, query)) {
+          score = Math.max(score, 72);
+        }
+        if (containsAllWords(snippet, query)) {
+          score = Math.max(score, 62);
+        }
+      }
+      return score;
+    }
+    function isExactSepTitleMatch(candidate, term, aliases) {
+      const title = normalizeTerm2(candidate && candidate.title);
+      return uniqueNormalizedTerms([term, ...Array.isArray(aliases) ? aliases : []]).some((query) => query && query === title);
+    }
+    function stripHtml(value) {
+      return decodeHtmlEntities(String(value || "")).replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<br\s*\/?>/gi, " ").replace(/<\/p>/gi, " ").replace(/<[^>]+>/g, " ").replace(/\s+([,.;:!?])/g, "$1").replace(/\s+/g, " ").trim();
+    }
+    function decodeHtmlEntities(value) {
+      return String(value || "").replace(/&#x([0-9a-f]+);/gi, (_, hex) => safeCodePoint(parseInt(hex, 16))).replace(/&#([0-9]+);/g, (_, num) => safeCodePoint(parseInt(num, 10))).replace(/&nbsp;/gi, " ").replace(/&ndash;/gi, "\u2013").replace(/&mdash;/gi, "\u2014").replace(/&hellip;/gi, "\u2026").replace(/&ldquo;/gi, "\u201C").replace(/&rdquo;/gi, "\u201D").replace(/&lsquo;/gi, "\u2018").replace(/&rsquo;/gi, "\u2019").replace(/&quot;/gi, '"').replace(/&amp;/gi, "&").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">");
+    }
+    function safeCodePoint(value) {
+      if (!Number.isFinite(value) || value <= 0) {
+        return "";
+      }
+      try {
+        return String.fromCodePoint(value);
+      } catch (_) {
+        return "";
+      }
+    }
+    function canonicalizeSepUrl(resultUrl, titleHref) {
+      const direct = sanitizeSepUrl(resultUrl);
+      if (direct) {
+        return direct;
+      }
+      const href = String(titleHref || "");
+      if (!href) {
+        return "";
+      }
+      try {
+        const parsed = new URL(href);
+        const entry = parsed.searchParams.get("entry");
+        if (entry && /^\/entries\/.+\/$/.test(entry)) {
+          return `https://plato.stanford.edu${entry}`;
+        }
+      } catch (_) {
+        return "";
+      }
+      return "";
+    }
+    function sanitizeSepUrl(value) {
+      const raw = String(value || "").trim();
+      if (!raw) {
+        return "";
+      }
+      try {
+        const url = new URL(raw);
+        const normalized = `${url.origin}${url.pathname}`;
+        return SEP_ENTRY_SUFFIX.test(normalized) ? normalized : "";
+      } catch (_) {
+        return "";
+      }
+    }
+    function containsAllWords(haystack, needle) {
+      const words = normalizeTerm2(needle).split(" ").filter(Boolean);
+      if (words.length === 0) {
+        return false;
+      }
+      return words.every((word) => String(haystack || "").includes(word));
+    }
+    function uniqueNormalizedTerms(values) {
+      return Array.from(new Set((values || []).map((value) => normalizeTerm2(value)).filter(Boolean)));
+    }
+    function urlSlug(url) {
+      try {
+        return new URL(String(url || "")).pathname.replace(/^\/+|\/+$/g, "").replace(/^entries\//, "").replace(/\//g, " ");
+      } catch (_) {
+        return "";
+      }
+    }
+    function firstCapture(text, pattern, index) {
+      const match = String(text || "").match(pattern);
+      return match ? String(match[index] || "") : "";
+    }
+    module2.exports = {
+      fetchSepEntry: fetchSepEntry2,
+      parseSepEntryHtml,
+      parseSepSearchResults,
+      pickSepCandidateHeuristically: pickSepCandidateHeuristically2,
+      rankSepCandidates,
+      scoreSepCandidate,
+      searchSep: searchSep2,
+      stripHtml
+    };
+  }
+});
+
 // src/main.ts
 var main_exports = {};
 __export(main_exports, {
@@ -827,7 +1093,13 @@ Return JSON only:
 `;
 
 // prompts/key-sentence-selection.md
-var key_sentence_selection_default = 'You are helping prepare a philosophy or humanities paper for easier reading in Obsidian.\n\nTask: for each paragraph, choose sentences worth highlighting before the user reads the paper.\n\nThe input includes a `density` value:\n- `medium`: choose at most one sentence from a paragraph when one sentence clearly helps the reader track the claim, distinction, definition, objection, or argumentative turn.\n- `sparse`: be much more selective. Choose only sentences that state a central thesis, important definition, decisive objection, or major transition in the argument. Omit most paragraphs.\n\nPrefer sentences that do at least one of these:\n- State the main claim, local thesis, or argumentative turn.\n- Introduce a key distinction, definition, objection, or methodological move.\n- Compress the paragraph\'s main takeaway into one sentence.\n\nDo not choose a sentence when:\n- The paragraph is mostly setup, citation, transition, example, restatement, or low-information prose.\n- No single sentence is clearly more important than the rest.\n- The best sentence would be too fragmentary without its neighbors.\n- In `sparse` mode, the sentence is merely useful rather than structurally important.\n\nConstraints:\n- Return at most one sentence per paragraph.\n- Use only the provided `paragraphId` and `sentenceId` values.\n- Omit paragraphs where no sentence deserves highlighting.\n- Do not quote or rewrite the sentence text.\n\nReturn JSON only:\n{\n  "paragraphs": [\n    {\n      "paragraphId": "p-3",\n      "sentenceId": "p-3-s-2"\n    }\n  ]\n}\n';
+var key_sentence_selection_default = 'You are helping prepare a philosophy or humanities paper for easier reading in Obsidian.\n\nTask: for each paragraph, choose sentences worth highlighting before the user reads the paper.\n\nThe input includes a `density` value:\n- `medium`: choose at most one sentence from a paragraph only when one sentence is clearly structurally important for following the argument. `medium` should still be conservative and omit most paragraphs.\n- `sparse`: be much more selective. Choose only sentences that state a central thesis, important definition, decisive objection, or major transition in the argument. Omit most paragraphs.\n\nPrefer sentences that do at least one of these:\n- State the main claim, local thesis, or decisive argumentative turn.\n- Introduce a key distinction, definition, objection, or methodological move that the reader is likely to need later.\n- Compress the paragraph\'s essential takeaway into one sentence without depending heavily on neighboring sentences.\n\nDo not choose a sentence when:\n- The paragraph is mostly setup, citation, transition, example, restatement, or low-information prose.\n- No single sentence is clearly more important than the rest.\n- The best sentence would be too fragmentary without its neighbors.\n- The sentence is merely helpful, elegant, or representative rather than structurally important.\n- The sentence mostly repeats the section heading, opens background context, or provides an example.\n- In `sparse` mode, the sentence is merely useful rather than structurally important.\n\nConstraints:\n- Return at most one sentence per paragraph.\n- Use only the provided `paragraphId` and `sentenceId` values.\n- Omit paragraphs where no sentence deserves highlighting.\n- If you are unsure, omit the paragraph.\n- In `medium` mode, do not try to find a highlight in every paragraph; most eligible paragraphs should still receive no highlight.\n- Do not quote or rewrite the sentence text.\n\nReturn JSON only:\n{\n  "paragraphs": [\n    {\n      "paragraphId": "p-3",\n      "sentenceId": "p-3-s-2"\n    }\n  ]\n}\n';
+
+// prompts/sep-entry-selection.md
+var sep_entry_selection_default = 'You are selecting the single most relevant Stanford Encyclopedia of Philosophy entry for a glossary term from a philosophy paper.\n\nUse the paper-local definition and passage notes to decide which candidate gives the best background article for this term.\n\nRequirements:\n- Prefer an exact or near-exact title match when it is genuinely relevant.\n- Do not choose a candidate just because one keyword overlaps.\n- If none of the candidates is relevant enough, return `matched: false`.\n- Keep the reason short and concrete.\n\nReturn JSON only:\n{\n  "matched": true,\n  "title": "candidate title",\n  "url": "https://plato.stanford.edu/entries/...",\n  "reason": "short reason"\n}\n';
+
+// prompts/sep-summary.md
+var sep_summary_default = 'You are writing a short SEP supplement for a cached hover glossary entry in a philosophy-reading plugin.\n\nUse the supplied SEP preamble to write exactly two English sentences.\n\nRequirements:\n- Write a definition-style supplement, not a generic review.\n- Complement the paper-local definition instead of replacing or contradicting it.\n- Do not repeat the local definition sentence-for-sentence.\n- Stay faithful to the supplied SEP preamble.\n- Do not use quotation marks.\n\nReturn JSON only:\n{\n  "summary": "Two concise sentences."\n}\n';
 
 // prompts/term-discovery.md
 var term_discovery_default = `You are helping prepare a philosophy or humanities paper for faster reading.
@@ -913,6 +1185,47 @@ var BaseProvider = class {
     }, null, 2);
     const json = await this.callJsonModel(key_sentence_selection_default, userPrompt, 2600, keySentenceSelectionSchema);
     return readArrayField(json, "paragraphs", "Key sentence selection response");
+  }
+  async chooseSepEntry(request) {
+    const userPrompt = JSON.stringify({
+      paperTitle: request.paperTitle,
+      sourcePaper: request.sourcePaper,
+      term: request.term,
+      aliases: request.aliases,
+      definition: request.definition,
+      clusters: request.clusters,
+      candidates: request.candidates
+    }, null, 2);
+    const json = await this.callJsonModel(sep_entry_selection_default, userPrompt, 1800, sepEntrySelectionSchema);
+    if (!json || typeof json.matched !== "boolean") {
+      throw new Error("SEP entry selection response did not include a matched flag.");
+    }
+    return {
+      matched: Boolean(json.matched),
+      title: String(json.title || ""),
+      url: String(json.url || ""),
+      reason: String(json.reason || "")
+    };
+  }
+  async summarizeSepEntry(request) {
+    const userPrompt = JSON.stringify({
+      paperTitle: request.paperTitle,
+      sourcePaper: request.sourcePaper,
+      term: request.term,
+      definition: request.definition,
+      sepEntry: {
+        title: request.entryTitle,
+        url: request.entryUrl,
+        preamble: request.preamble
+      }
+    }, null, 2);
+    const json = await this.callJsonModel(sep_summary_default, userPrompt, 1200, sepSummarySchema);
+    if (!json || typeof json.summary !== "string" || !json.summary.trim()) {
+      throw new Error("SEP summary response did not include a summary string.");
+    }
+    return {
+      summary: json.summary.trim()
+    };
   }
 };
 function readArrayField(json, fieldName, context) {
@@ -1161,6 +1474,25 @@ var explainedTermSchema = {
   },
   required: ["term", "aliases", "definition", "clusters"]
 };
+var chosenSepEntrySchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    matched: { type: "boolean" },
+    title: { type: "string" },
+    url: { type: "string" },
+    reason: { type: "string" }
+  },
+  required: ["matched", "title", "url", "reason"]
+};
+var sepSummarySchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    summary: { type: "string" }
+  },
+  required: ["summary"]
+};
 var selectedKeySentenceSchema = {
   type: "object",
   additionalProperties: false,
@@ -1193,6 +1525,7 @@ var batchExplanationSchema = {
   required: ["terms"]
 };
 var fallbackExplanationSchema = explainedTermSchema;
+var sepEntrySelectionSchema = chosenSepEntrySchema;
 function createLLMProvider(settings) {
   if (settings.provider === "anthropic") {
     return new AnthropicProvider(settings.anthropicApiKey, settings.anthropicModel, settings.glossaryExplanationLength);
@@ -1201,12 +1534,14 @@ function createLLMProvider(settings) {
 }
 
 // src/main.ts
+var import_sep = __toESM(require_sep());
 var execFileAsync = (0, import_util.promisify)(import_child_process.execFile);
 var EXPLANATION_BATCH_SIZE = 2;
 var KEY_SENTENCE_BATCH_SIZE = 6;
 var MAX_EXPLANATION_OCCURRENCES = 5;
 var EXPLANATION_EXCERPT_RADIUS = 350;
 var MAX_EXPLANATION_CLUSTERS = 3;
+var SEP_CANDIDATE_LIMIT = 5;
 var DEFAULT_SETTINGS = {
   provider: "openai",
   openaiApiKey: "",
@@ -1221,6 +1556,7 @@ var DEFAULT_SETTINGS = {
   maxPrecomputedTerms: 40,
   glossaryFolderName: "_glossary",
   glossaryExplanationLength: "standard",
+  sepEnrichmentEnabled: false,
   hoverDelayMs: 350,
   windowSize: 4,
   windowOverlap: 1,
@@ -1237,7 +1573,7 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
   async onload() {
     await this.loadSettings();
     this.statusEl = this.addStatusBarItem();
-    this.statusEl.addClass("philosophy-reader-progress");
+    this.statusEl.addClass("scholia-progress");
     this.setStatus("");
     this.addSettingTab(new PhilosophyReaderSettingTab(this.app, this));
     this.registerEditorExtension(this.buildHoverExtension());
@@ -1298,6 +1634,21 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
         }
         if (canRun) {
           void this.extractTermsAndExplain(file);
+        }
+        return canRun;
+      }
+    });
+    this.addCommand({
+      id: "enrich-glossary-with-sep-for-current-paper",
+      name: "Scholia: Enrich Glossary with SEP for Current Paper",
+      checkCallback: (checking) => {
+        const file = this.app.workspace.getActiveFile();
+        const canRun = file instanceof import_obsidian2.TFile && file.extension.toLowerCase() === "md";
+        if (checking) {
+          return canRun;
+        }
+        if (canRun) {
+          void this.enrichGlossaryWithSepForPaper(file, { background: false });
         }
         return canRun;
       }
@@ -1435,6 +1786,9 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
         menu.addItem((item) => item.setTitle("Extract Terms and Explain").setIcon("brain").onClick(() => {
           void this.extractTermsAndExplain(abstractFile);
         }));
+        menu.addItem((item) => item.setTitle("Enrich Glossary with SEP").setIcon("book-open").onClick(() => {
+          void this.enrichGlossaryWithSepForPaper(abstractFile, { background: false });
+        }));
       }
     }));
   }
@@ -1469,16 +1823,33 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
   }
   renderPreparedTooltip(entry, cluster) {
     const root = document.createElement("div");
-    root.addClass("philosophy-reader-tooltip");
+    root.addClass("scholia-tooltip");
     const title = document.createElement("h4");
     title.setText(entry.term);
     root.appendChild(title);
     const definition = document.createElement("p");
     definition.setText(entry.definition || "No definition was generated.");
     root.appendChild(definition);
+    if (entry.sep?.status === "matched" && entry.sep.summary) {
+      const label = document.createElement("div");
+      label.addClass("scholia-label");
+      label.setText("SEP");
+      root.appendChild(label);
+      const summary = document.createElement("p");
+      summary.setText(entry.sep.summary);
+      root.appendChild(summary);
+      if (entry.sep.entryUrl) {
+        const link = document.createElement("a");
+        link.href = entry.sep.entryUrl;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.setText(entry.sep.entryTitle || "Open SEP entry");
+        root.appendChild(link);
+      }
+    }
     if (cluster?.usageNote) {
       const label = document.createElement("div");
-      label.addClass("philosophy-reader-label");
+      label.addClass("scholia-label");
       label.setText(cluster.label || "This passage");
       root.appendChild(label);
       const usage = document.createElement("p");
@@ -1489,12 +1860,12 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
   }
   renderUnpreparedTooltip(word, file) {
     const root = document.createElement("div");
-    root.addClass("philosophy-reader-tooltip");
+    root.addClass("scholia-tooltip");
     const title = document.createElement("h4");
     title.setText(word);
     root.appendChild(title);
     const message = document.createElement("p");
-    message.addClass("philosophy-reader-empty");
+    message.addClass("scholia-empty");
     message.setText("No prepared glossary entry yet.");
     root.appendChild(message);
     const button = document.createElement("button");
@@ -1911,6 +2282,7 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
       const inputs = pendingTerms.map((term) => this.buildExplainTermInput(markdown, paragraphs, term));
       const batches = chunk(inputs, EXPLANATION_BATCH_SIZE);
       let completed = 0;
+      const writtenTerms = /* @__PURE__ */ new Set();
       for (const batch of batches) {
         this.setStatus(`Scholia: explaining terms ${completed + 1}-${completed + batch.length}/${inputs.length}`);
         const explanations = await provider.explainTerms({
@@ -1923,19 +2295,31 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
           if (!input) {
             continue;
           }
-          await this.writeGlossaryEntry(file, this.toGlossaryEntry(file, provider.name, provider.model, input, explanation));
+          const entry = this.toGlossaryEntry(file, provider.name, provider.model, input, explanation);
+          await this.writeGlossaryEntry(file, entry);
+          writtenTerms.add((0, import_core2.normalizeTerm)(entry.term));
           completed += 1;
         }
       }
       this.glossaryCache.delete(file.path);
       await this.loadGlossaryIndex(file, true);
+      let sepSummary = null;
+      if (this.settings.sepEnrichmentEnabled && writtenTerms.size > 0) {
+        sepSummary = await this.enrichGlossaryWithSepForPaper(file, {
+          background: true,
+          provider,
+          requestedTerms: Array.from(writtenTerms),
+          writeStatus: false
+        });
+      }
       await this.writeGlossaryStatus(file, "ready", [
         `Completed: ${(/* @__PURE__ */ new Date()).toISOString()}`,
         `New terms prepared: ${completed}`,
         `Provider: ${provider.name}`,
-        `Model: ${provider.model}`
+        `Model: ${provider.model}`,
+        ...this.buildSepStatusLines(sepSummary)
       ]);
-      new import_obsidian2.Notice(`Glossary prepared: ${completed} new term${completed === 1 ? "" : "s"}.`);
+      new import_obsidian2.Notice(buildGlossaryReadyNotice(completed, sepSummary));
     } catch (error) {
       await this.writeGlossaryStatus(file, "failed", [
         `Failed: ${(/* @__PURE__ */ new Date()).toISOString()}`,
@@ -1990,6 +2374,7 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
       updated: now,
       definition: explanation.definition || "",
       clusters,
+      sep: null,
       sep_enabled: false
     };
   }
@@ -2011,13 +2396,243 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
         terms: [input]
       });
       await this.ensureFolder(this.glossaryFolderPath(file));
-      await this.writeGlossaryEntry(file, this.toGlossaryEntry(file, provider.name, provider.model, input, explanation));
+      const entry = this.toGlossaryEntry(file, provider.name, provider.model, input, explanation);
+      await this.writeGlossaryEntry(file, entry);
       this.glossaryCache.delete(file.path);
-      new import_obsidian2.Notice(`Prepared glossary entry: ${explanation.term || selectedTerm}`);
+      let sepSummary = null;
+      if (this.settings.sepEnrichmentEnabled) {
+        sepSummary = await this.enrichGlossaryWithSepForPaper(file, {
+          background: true,
+          provider,
+          requestedTerms: [(0, import_core2.normalizeTerm)(entry.term)],
+          writeStatus: false
+        });
+      }
+      new import_obsidian2.Notice(buildPreparedTermNotice(explanation.term || selectedTerm, sepSummary));
     } catch (error) {
       new import_obsidian2.Notice(`Explain Term Now failed: ${toErrorMessage(error)}`);
       console.error(error);
     }
+  }
+  async enrichGlossaryWithSepForPaper(file, options = {}) {
+    const provider = options.provider || createLLMProvider(this.settings);
+    const writeStatus = options.writeStatus !== false;
+    const requestedTerms = new Set((options.requestedTerms || []).map((term) => (0, import_core2.normalizeTerm)(term)).filter(Boolean));
+    const summary = {
+      attempted: 0,
+      matched: 0,
+      notFound: 0,
+      failed: 0,
+      skipped: 0
+    };
+    try {
+      const index = await this.loadGlossaryIndex(file, true);
+      const matchingEntries = index.entries.filter((entry) => requestedTerms.size === 0 || requestedTerms.has((0, import_core2.normalizeTerm)(entry.term)));
+      const targets = matchingEntries.filter((entry) => entry.sep?.status !== "matched" && entry.sep?.status !== "not_found");
+      summary.skipped = matchingEntries.length - targets.length;
+      if (writeStatus) {
+        await this.writeGlossaryStatus(file, "running", [
+          `SEP enrichment started: ${(/* @__PURE__ */ new Date()).toISOString()}`,
+          `Provider: ${provider.name}`,
+          `Model: ${provider.model}`,
+          `Targets: ${targets.length}`
+        ]);
+      }
+      if (targets.length === 0) {
+        if (writeStatus) {
+          await this.writeGlossaryStatus(file, "ready", [
+            "SEP enrichment is already cached for the selected glossary entries.",
+            `Skipped entries: ${summary.skipped}`
+          ]);
+        }
+        if (!options.background) {
+          new import_obsidian2.Notice("SEP enrichment is already cached for the selected glossary entries.");
+        }
+        return summary;
+      }
+      for (let index2 = 0; index2 < targets.length; index2 += 1) {
+        const target = targets[index2];
+        summary.attempted += 1;
+        this.setStatus(`Scholia: enriching glossary with SEP ${index2 + 1}/${targets.length}`);
+        try {
+          const sep2 = await this.buildSepDataForEntry(file, target, provider);
+          await this.writeGlossaryEntry(file, {
+            ...target,
+            updated: (/* @__PURE__ */ new Date()).toISOString(),
+            sep: sep2,
+            sep_enabled: sep2.status === "matched"
+          });
+          if (sep2.status === "matched") {
+            summary.matched += 1;
+          } else if (sep2.status === "not_found") {
+            summary.notFound += 1;
+          } else {
+            summary.failed += 1;
+          }
+        } catch (error) {
+          summary.failed += 1;
+          const sep2 = this.buildFailedSepData(target.term, target.term, error);
+          await this.writeGlossaryEntry(file, {
+            ...target,
+            updated: (/* @__PURE__ */ new Date()).toISOString(),
+            sep: sep2,
+            sep_enabled: false
+          });
+        }
+      }
+      this.glossaryCache.delete(file.path);
+      await this.loadGlossaryIndex(file, true);
+      if (writeStatus) {
+        await this.writeGlossaryStatus(file, "ready", [
+          `SEP enrichment completed: ${(/* @__PURE__ */ new Date()).toISOString()}`,
+          ...this.buildSepStatusLines(summary)
+        ]);
+      }
+      if (!options.background) {
+        new import_obsidian2.Notice(buildSepNotice(summary));
+      }
+      return summary;
+    } catch (error) {
+      if (writeStatus) {
+        await this.writeGlossaryStatus(file, "failed", [
+          `SEP enrichment failed: ${(/* @__PURE__ */ new Date()).toISOString()}`,
+          toErrorMessage(error)
+        ]);
+      }
+      if (!options.background) {
+        new import_obsidian2.Notice(`SEP enrichment failed: ${toErrorMessage(error)}`);
+      }
+      console.error(error);
+      return summary;
+    } finally {
+      this.setStatus("");
+    }
+  }
+  async buildSepDataForEntry(file, entry, provider) {
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const queries = Array.from(new Set([entry.term, ...entry.aliases || []].map((term) => String(term || "").trim()).filter(Boolean)));
+    let usedQuery = entry.term;
+    let candidates = [];
+    for (const query of queries) {
+      usedQuery = query;
+      candidates = (await (0, import_sep.searchSep)(query)).slice(0, SEP_CANDIDATE_LIMIT);
+      if (candidates.length > 0) {
+        break;
+      }
+    }
+    if (candidates.length === 0) {
+      return {
+        status: "not_found",
+        query: usedQuery,
+        entryTitle: "",
+        entryUrl: "",
+        summary: "",
+        sourceExcerpt: "",
+        revised: "",
+        fetchedAt: now
+      };
+    }
+    const heuristic = (0, import_sep.pickSepCandidateHeuristically)(candidates, entry.term, entry.aliases);
+    let chosenCandidate = heuristic.candidate;
+    if (!chosenCandidate) {
+      const choice = await provider.chooseSepEntry({
+        paperTitle: (0, import_core2.getBaseName)(file.path),
+        sourcePaper: file.path,
+        term: entry.term,
+        aliases: entry.aliases || [],
+        definition: entry.definition,
+        clusters: entry.clusters || [],
+        candidates: heuristic.candidates.map(({ score, ...candidate }) => candidate)
+      });
+      chosenCandidate = this.resolveChosenSepCandidate(choice, heuristic.candidates);
+      if (!chosenCandidate) {
+        return {
+          status: "not_found",
+          query: usedQuery,
+          entryTitle: "",
+          entryUrl: "",
+          summary: "",
+          sourceExcerpt: "",
+          revised: "",
+          fetchedAt: now
+        };
+      }
+    }
+    const sepEntry = await (0, import_sep.fetchSepEntry)(chosenCandidate.url);
+    if (!sepEntry.preamble.trim()) {
+      return this.buildFailedSepData(entry.term, usedQuery, new Error("SEP entry did not include a readable preamble."));
+    }
+    const summary = await provider.summarizeSepEntry({
+      paperTitle: (0, import_core2.getBaseName)(file.path),
+      sourcePaper: file.path,
+      term: entry.term,
+      definition: entry.definition,
+      entryTitle: sepEntry.title || chosenCandidate.title,
+      entryUrl: chosenCandidate.url,
+      preamble: sepEntry.preamble
+    });
+    return this.buildMatchedSepData(usedQuery, chosenCandidate, sepEntry, summary, now);
+  }
+  resolveChosenSepCandidate(choice, candidates) {
+    if (!choice.matched) {
+      return null;
+    }
+    const byUrl = candidates.find((candidate) => candidate.url === choice.url);
+    if (byUrl) {
+      return byUrl;
+    }
+    const normalizedTitle = (0, import_core2.normalizeTerm)(choice.title);
+    const byTitle = candidates.find((candidate) => (0, import_core2.normalizeTerm)(candidate.title) === normalizedTitle);
+    if (byTitle) {
+      return byTitle;
+    }
+    if (!choice.url.startsWith("https://plato.stanford.edu/entries/")) {
+      return null;
+    }
+    return {
+      title: choice.title,
+      url: choice.url,
+      snippet: "",
+      normalizedTitle,
+      score: 0
+    };
+  }
+  buildMatchedSepData(query, candidate, sepEntry, summary, fetchedAt) {
+    return {
+      status: "matched",
+      query,
+      entryTitle: sepEntry.title || candidate.title,
+      entryUrl: candidate.url,
+      summary: summary.summary,
+      sourceExcerpt: sepEntry.sourceExcerpt || sepEntry.preamble,
+      revised: sepEntry.revised || "",
+      fetchedAt
+    };
+  }
+  buildFailedSepData(term, query, error) {
+    return {
+      status: "failed",
+      query: query || term,
+      entryTitle: "",
+      entryUrl: "",
+      summary: "",
+      sourceExcerpt: "",
+      revised: "",
+      fetchedAt: (/* @__PURE__ */ new Date()).toISOString(),
+      error: toErrorMessage(error)
+    };
+  }
+  buildSepStatusLines(summary) {
+    if (!summary) {
+      return [];
+    }
+    return [
+      `SEP attempted: ${summary.attempted}`,
+      `SEP matched: ${summary.matched}`,
+      `SEP not found: ${summary.notFound}`,
+      `SEP failed: ${summary.failed}`,
+      `SEP skipped: ${summary.skipped}`
+    ];
   }
   async writeGlossaryEntry(file, entry) {
     const folderPath = this.glossaryFolderPath(file);
@@ -2301,12 +2916,45 @@ var PhilosophyReaderSettingTab = class extends import_obsidian2.PluginSettingTab
       this.plugin.settings.glossaryExplanationLength = value === "brief" ? "brief" : "standard";
       await this.plugin.saveSettings();
     }));
+    new import_obsidian2.Setting(containerEl).setName("Enable SEP enrichment").setDesc("After glossary entries are prepared, fetch matching Stanford Encyclopedia of Philosophy introductions and cache a short SEP supplement for hover.").addToggle((toggle) => toggle.setValue(this.plugin.settings.sepEnrichmentEnabled).onChange(async (value) => {
+      this.plugin.settings.sepEnrichmentEnabled = value;
+      await this.plugin.saveSettings();
+    }));
     new import_obsidian2.Setting(containerEl).setName("Hover delay").setDesc("Milliseconds before the hover tooltip appears. Reload Obsidian after changing this.").addSlider((slider) => slider.setLimits(100, 1e3, 50).setDynamicTooltip().setValue(this.plugin.settings.hoverDelayMs).onChange(async (value) => {
       this.plugin.settings.hoverDelayMs = value;
       await this.plugin.saveSettings();
     }));
   }
 };
+function buildGlossaryReadyNotice(completed, sepSummary) {
+  const base = `Glossary prepared: ${completed} new term${completed === 1 ? "" : "s"}.`;
+  if (!sepSummary || sepSummary.attempted === 0) {
+    return base;
+  }
+  return `${base} SEP matched ${sepSummary.matched}/${sepSummary.attempted}.`;
+}
+function buildPreparedTermNotice(term, sepSummary) {
+  const base = `Prepared glossary entry: ${term}`;
+  if (!sepSummary || sepSummary.attempted === 0) {
+    return base;
+  }
+  if (sepSummary.matched > 0) {
+    return `${base}. SEP summary cached.`;
+  }
+  if (sepSummary.notFound > 0) {
+    return `${base}. No SEP entry matched.`;
+  }
+  if (sepSummary.failed > 0) {
+    return `${base}. SEP enrichment failed.`;
+  }
+  return base;
+}
+function buildSepNotice(summary) {
+  if (summary.attempted === 0) {
+    return "SEP enrichment is already cached for the selected glossary entries.";
+  }
+  return `SEP enrichment complete: ${summary.matched} matched, ${summary.notFound} not found, ${summary.failed} failed, ${summary.skipped} skipped.`;
+}
 function joinVaultPath(...parts) {
   return (0, import_obsidian2.normalizePath)(parts.filter(Boolean).join("/"));
 }

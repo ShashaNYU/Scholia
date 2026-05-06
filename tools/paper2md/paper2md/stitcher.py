@@ -4,8 +4,8 @@ import re
 from dataclasses import dataclass
 
 _FOOTNOTES_HEADER_RE = re.compile(r"^##\s+Footnotes\s*$", re.MULTILINE)
-_FN_DEF_RE = re.compile(r"^\[\^(fn\d+)\]:\s*(.*?)(\s*\^fn-\d+)?\s*$", re.MULTILINE)
-_FN_REF_RE = re.compile(r"\[\^(fn\d+)\](?!:)")
+_FN_DEF_RE = re.compile(r"^\\?\[\^(fn\d+)\\?\]:\s*(.*?)(\s*\^fn-\d+)?\s*$", re.MULTILINE)
+_FN_REF_RE = re.compile(r"\\?\[\^(fn\d+)\\?\](?!\s*:)")
 
 
 @dataclass

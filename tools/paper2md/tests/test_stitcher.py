@@ -49,3 +49,10 @@ def test_stitch_adds_footnotes_at_end():
     footnotes_idx = result.index("## Footnotes")
     assert footnotes_idx > result.index("Chunk 1")
     assert footnotes_idx > result.index("Chunk 2")
+
+
+def test_stitch_normalizes_escaped_footnote_syntax():
+    chunk = "Chunk 1\\[^fn1\\].\n\n## Footnotes\n\n\\[^fn1\\]: Note A. ^fn-1\n"
+    result = stitch([chunk])
+    assert "Chunk 1[^fn1]." in result
+    assert "[^fn1]: Note A. ^fn-1" in result

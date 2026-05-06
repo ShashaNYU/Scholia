@@ -16,4 +16,4 @@ echo
 echo "Installed paper2md:"
 echo "  ${VENV_DIR}/bin/paper2md"
 echo
-echo "Set Philosophy Reader -> Paper2MD CLI path to that executable if needed."
+echo "Set Scholia -> Paper2MD CLI path to that executable if needed."

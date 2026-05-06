@@ -668,6 +668,8 @@ function parseYamlScalar(value) {
 function buildGlossaryMarkdown(entry) {
   const clusters = Array.isArray(entry.clusters) ? entry.clusters : [];
   const aliases = Array.isArray(entry.aliases) ? entry.aliases : [];
+  const sep = normalizeSepEntry(entry.sep);
+  const sepEnabled = sep ? sep.status === "matched" : Boolean(entry.sep_enabled);
   const frontmatter = {
     term: entry.term,
     normalizedTerm: normalizeTerm(entry.term),
@@ -678,7 +680,8 @@ function buildGlossaryMarkdown(entry) {
     created: entry.created || new Date().toISOString(),
     updated: entry.updated || new Date().toISOString(),
     definition: entry.definition || "",
-    sep_enabled: false,
+    sep_enabled: sepEnabled,
+    ...(sep ? { sep } : {}),
     clusters
   };
 
@@ -693,7 +696,34 @@ function buildGlossaryMarkdown(entry) {
     })
     .join("\n\n");
 
-  return `---\n${frontmatterText}\n---\n\n# ${entry.term}\n\n${entry.definition || ""}\n\n## Usage notes\n\n${usageNotes}\n`;
+  const sections = [
+    `---\n${frontmatterText}\n---`,
+    `# ${entry.term}`,
+    entry.definition || ""
+  ];
+
+  if (sep) {
+    sections.push("## SEP");
+    if (sep.status === "matched") {
+      sections.push(sep.summary || "SEP summary cached but empty.");
+      if (sep.entryUrl) {
+        const label = sep.entryTitle || "SEP entry";
+        sections.push(`Source: [${label}](${sep.entryUrl})`);
+      }
+      if (sep.revised) {
+        sections.push(`Revised: ${sep.revised}`);
+      }
+    } else if (sep.status === "not_found") {
+      sections.push("No SEP entry matched this term.");
+    } else {
+      sections.push(`SEP enrichment failed.${sep.error ? ` ${sep.error}` : ""}`.trim());
+    }
+  }
+
+  sections.push("## Usage notes");
+  sections.push(usageNotes);
+
+  return `${sections.join("\n\n")}\n`;
 }
 
 function parseGlossaryMarkdown(markdown) {
@@ -712,6 +742,7 @@ function parseGlossaryMarkdown(markdown) {
   if (!data.term && !data.normalizedTerm) {
     return null;
   }
+  const sep = normalizeSepEntry(data.sep);
   return {
     term: data.term || data.normalizedTerm,
     normalizedTerm: data.normalizedTerm || normalizeTerm(data.term),
@@ -723,7 +754,31 @@ function parseGlossaryMarkdown(markdown) {
     updated: data.updated || "",
     definition: data.definition || "",
     clusters: Array.isArray(data.clusters) ? data.clusters : [],
-    sep_enabled: Boolean(data.sep_enabled)
+    sep,
+    sep_enabled: sep ? sep.status === "matched" : Boolean(data.sep_enabled)
+  };
+}
+
+function normalizeSepEntry(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const status = String(value.status || "").trim();
+  if (!status) {
+    return null;
+  }
+
+  return {
+    status: status === "matched" || status === "not_found" || status === "failed" ? status : "failed",
+    query: String(value.query || ""),
+    entryTitle: String(value.entryTitle || ""),
+    entryUrl: String(value.entryUrl || ""),
+    summary: String(value.summary || ""),
+    sourceExcerpt: String(value.sourceExcerpt || ""),
+    revised: String(value.revised || ""),
+    fetchedAt: String(value.fetchedAt || ""),
+    error: String(value.error || "")
   };
 }
 

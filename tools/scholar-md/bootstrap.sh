@@ -16,4 +16,4 @@ echo
 echo "Installed scholar-md:"
 echo "  ${VENV_DIR}/bin/scholar-md"
 echo
-echo "Set Philosophy Reader -> Scholar-MD CLI path to that executable if needed."
+echo "Set Scholia -> Scholar-MD CLI path to that executable if needed."

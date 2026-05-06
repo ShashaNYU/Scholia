@@ -2,8 +2,11 @@ import { requestUrl } from "obsidian";
 import batchExplanationPrompt from "../prompts/batch-explanation.md";
 import fallbackExplanationPrompt from "../prompts/fallback-explanation.md";
 import keySentenceSelectionPrompt from "../prompts/key-sentence-selection.md";
+import sepEntrySelectionPrompt from "../prompts/sep-entry-selection.md";
+import sepSummaryPrompt from "../prompts/sep-summary.md";
 import termDiscoveryPrompt from "../prompts/term-discovery.md";
 import { parseJsonFromText, parseLooseJsonFromText, type ContextCluster, type ParagraphWindow, type TermCandidate } from "./core.js";
+import type { SepSearchCandidate } from "./sep.js";
 
 export type ProviderName = "openai" | "anthropic";
 export type PdfImportBackend = "scholar-md" | "paper2md" | "marker";
@@ -24,6 +27,7 @@ export interface PhilosophyReaderSettings {
   maxPrecomputedTerms: number;
   glossaryFolderName: string;
   glossaryExplanationLength: GlossaryExplanationLength;
+  sepEnrichmentEnabled: boolean;
   hoverDelayMs: number;
   windowSize: number;
   windowOverlap: number;
@@ -55,6 +59,37 @@ export interface ExplainTermsRequest {
   paperTitle: string;
   sourcePaper: string;
   terms: ExplainTermInput[];
+}
+
+export interface ChooseSepEntryRequest {
+  paperTitle: string;
+  sourcePaper: string;
+  term: string;
+  aliases: string[];
+  definition: string;
+  clusters: ContextCluster[];
+  candidates: SepSearchCandidate[];
+}
+
+export interface ChosenSepEntry {
+  matched: boolean;
+  title: string;
+  url: string;
+  reason: string;
+}
+
+export interface SummarizeSepEntryRequest {
+  paperTitle: string;
+  sourcePaper: string;
+  term: string;
+  definition: string;
+  entryTitle: string;
+  entryUrl: string;
+  preamble: string;
+}
+
+export interface SepSummary {
+  summary: string;
 }
 
 export interface KeySentenceInput {
@@ -97,10 +132,12 @@ export interface ExplainedTerm {
 export interface LLMProvider {
   readonly name: ProviderName;
   readonly model: string;
+  chooseSepEntry(request: ChooseSepEntryRequest): Promise<ChosenSepEntry>;
   discoverTerms(request: DiscoverTermsRequest): Promise<TermCandidate[]>;
   explainTerms(request: ExplainTermsRequest): Promise<ExplainedTerm[]>;
   explainTermFallback(request: ExplainTermsRequest): Promise<ExplainedTerm>;
   selectKeySentences(request: SelectKeySentencesRequest): Promise<SelectedKeySentence[]>;
+  summarizeSepEntry(request: SummarizeSepEntryRequest): Promise<SepSummary>;
 }
 
 type JsonSchema = Record<string, unknown>;
@@ -162,6 +199,49 @@ abstract class BaseProvider implements LLMProvider {
     }, null, 2);
     const json = await this.callJsonModel(keySentenceSelectionPrompt, userPrompt, 2600, keySentenceSelectionSchema);
     return readArrayField<SelectedKeySentence>(json, "paragraphs", "Key sentence selection response");
+  }
+
+  async chooseSepEntry(request: ChooseSepEntryRequest): Promise<ChosenSepEntry> {
+    const userPrompt = JSON.stringify({
+      paperTitle: request.paperTitle,
+      sourcePaper: request.sourcePaper,
+      term: request.term,
+      aliases: request.aliases,
+      definition: request.definition,
+      clusters: request.clusters,
+      candidates: request.candidates
+    }, null, 2);
+    const json = await this.callJsonModel(sepEntrySelectionPrompt, userPrompt, 1800, sepEntrySelectionSchema) as ChosenSepEntry;
+    if (!json || typeof json.matched !== "boolean") {
+      throw new Error("SEP entry selection response did not include a matched flag.");
+    }
+    return {
+      matched: Boolean(json.matched),
+      title: String(json.title || ""),
+      url: String(json.url || ""),
+      reason: String(json.reason || "")
+    };
+  }
+
+  async summarizeSepEntry(request: SummarizeSepEntryRequest): Promise<SepSummary> {
+    const userPrompt = JSON.stringify({
+      paperTitle: request.paperTitle,
+      sourcePaper: request.sourcePaper,
+      term: request.term,
+      definition: request.definition,
+      sepEntry: {
+        title: request.entryTitle,
+        url: request.entryUrl,
+        preamble: request.preamble
+      }
+    }, null, 2);
+    const json = await this.callJsonModel(sepSummaryPrompt, userPrompt, 1200, sepSummarySchema) as SepSummary;
+    if (!json || typeof json.summary !== "string" || !json.summary.trim()) {
+      throw new Error("SEP summary response did not include a summary string.");
+    }
+    return {
+      summary: json.summary.trim()
+    };
   }
 }
 
@@ -469,6 +549,27 @@ const explainedTermSchema: JsonSchema = {
   required: ["term", "aliases", "definition", "clusters"]
 };
 
+const chosenSepEntrySchema: JsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    matched: { type: "boolean" },
+    title: { type: "string" },
+    url: { type: "string" },
+    reason: { type: "string" }
+  },
+  required: ["matched", "title", "url", "reason"]
+};
+
+const sepSummarySchema: JsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    summary: { type: "string" }
+  },
+  required: ["summary"]
+};
+
 const selectedKeySentenceSchema: JsonSchema = {
   type: "object",
   additionalProperties: false,
@@ -504,6 +605,7 @@ const batchExplanationSchema: JsonSchema = {
 };
 
 const fallbackExplanationSchema: JsonSchema = explainedTermSchema;
+const sepEntrySelectionSchema: JsonSchema = chosenSepEntrySchema;
 
 export function createLLMProvider(settings: PhilosophyReaderSettings): LLMProvider {
   if (settings.provider === "anthropic") {

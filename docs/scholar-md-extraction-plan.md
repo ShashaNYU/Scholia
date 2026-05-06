@@ -1,6 +1,6 @@
 # Scholar-MD Extraction Plan
 
-This document describes how to split `scholar-md` out of the Philosophy Reader
+This document describes how to split `scholar-md` out of the Scholia
 plugin repo into its own GitHub project while keeping the current Obsidian
 integration working.
 
@@ -92,7 +92,7 @@ After extraction, responsibilities should be:
 - diagnostics JSON generation
 - binary/runtime packaging
 
-### `philosophy-reader` repo
+### `scholia` repo
 
 - Obsidian commands and settings
 - locating or downloading the `scholar-md` runtime
@@ -154,7 +154,7 @@ This contract is what the Obsidian plugin should depend on.
    - smoke conversion test
 4. Add release automation for platform builds.
 
-### Phase 3: convert Philosophy Reader into a consumer
+### Phase 3: convert Scholia into a consumer
 
 In the plugin repo:
 
@@ -175,7 +175,7 @@ Recommended model:
 
 1. Build one standalone binary per platform.
 2. Attach those binaries to GitHub releases in the `scholar-md` repo.
-3. Let Philosophy Reader download the correct asset on first use.
+3. Let Scholia download the correct asset on first use.
 
 Suggested platform targets:
 
@@ -244,8 +244,8 @@ The extraction is done when:
 1. `scholar-md` lives in its own git repo.
 2. The new repo can run tests without depending on the plugin repo.
 3. The new repo can produce a releasable standalone executable.
-4. Philosophy Reader can invoke the released runtime without vendoring source.
-5. A user can install Philosophy Reader and run PDF conversion without manually
+4. Scholia can invoke the released runtime without vendoring source.
+5. A user can install Scholia and run PDF conversion without manually
    creating a Python venv.
 
 ## Immediate next actions

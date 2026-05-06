@@ -164,6 +164,16 @@ test("glossary markdown round-trips cache metadata", () => {
     created: "2026-01-01T00:00:00.000Z",
     updated: "2026-01-01T00:00:00.000Z",
     definition: "A context-aware definition.",
+    sep: {
+      status: "matched",
+      query: "transcendental idealism",
+      entryTitle: "Transcendental Idealism",
+      entryUrl: "https://plato.stanford.edu/entries/transcendental-idealism/",
+      summary: "A short SEP supplement.",
+      sourceExcerpt: "A longer source excerpt.",
+      revised: "2026-01-21",
+      fetchedAt: "2026-01-02T00:00:00.000Z"
+    },
     clusters: [{
       id: "cluster-1",
       label: "First",
@@ -178,7 +188,10 @@ test("glossary markdown round-trips cache metadata", () => {
   const parsed = parseGlossaryMarkdown(markdown);
   assert.equal(parsed.term, "Transcendental Idealism");
   assert.equal(parsed.definition, "A context-aware definition.");
+  assert.equal(parsed.sep.status, "matched");
+  assert.equal(parsed.sep.entryUrl, "https://plato.stanford.edu/entries/transcendental-idealism/");
   assert.equal(parsed.clusters[0].usageNote, "It frames the local argument.");
+  assert.match(markdown, /## SEP/);
 });
 
 test("legacy glossary markdown still parses without exposing removed fields", () => {
@@ -223,6 +236,37 @@ It frames the local argument.
   assert.equal(parsed.clusters[0].usageNote, "It frames the local argument.");
   assert.equal("authorUsage" in parsed, false);
   assert.equal("firstUse" in parsed, false);
+});
+
+test("glossary markdown records SEP cache failures without breaking parse", () => {
+  const markdown = buildGlossaryMarkdown({
+    term: "Epistemic Luck",
+    normalizedTerm: "epistemic luck",
+    aliases: [],
+    sourcePaper: "paper/example.md",
+    provider: "openai",
+    model: "gpt-5.4-mini",
+    created: "2026-01-01T00:00:00.000Z",
+    updated: "2026-01-01T00:00:00.000Z",
+    definition: "A local definition.",
+    sep: {
+      status: "failed",
+      query: "epistemic luck",
+      entryTitle: "",
+      entryUrl: "",
+      summary: "",
+      sourceExcerpt: "",
+      revised: "",
+      fetchedAt: "2026-01-02T00:00:00.000Z",
+      error: "Timed out"
+    },
+    clusters: []
+  });
+
+  const parsed = parseGlossaryMarkdown(markdown);
+  assert.equal(parsed.sep.status, "failed");
+  assert.equal(parsed.sep.error, "Timed out");
+  assert.match(markdown, /SEP enrichment failed/);
 });
 
 test("applySentenceHighlights is idempotent for the same sentence", () => {

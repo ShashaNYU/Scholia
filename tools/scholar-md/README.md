@@ -12,7 +12,7 @@ ordering.
 ## Project Boundary
 
 `tools/scholar-md/` is maintained as a standalone Python CLI project inside the
-Philosophy Reader repo. Obsidian calls the CLI; the plugin bundle does not
+Scholia repo. Obsidian calls the CLI; the plugin bundle does not
 embed PDF parsing logic.
 
 The expected local install target is the plugin repo venv:
@@ -93,9 +93,9 @@ With `--emit-diagnostics`, the converter writes a sidecar JSON file containing
 page-level layout facts, removed headers/footers, detected formulas and
 footnotes, low-confidence warnings, and source bounding boxes where available.
 
-## Philosophy Reader Contract
+## Scholia Contract
 
-Philosophy Reader calls `scholar-md` with:
+Scholia calls `scholar-md` with:
 
 ```sh
 scholar-md input.pdf \

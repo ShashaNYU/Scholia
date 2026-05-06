@@ -39,18 +39,30 @@ import {
   type GlossaryEntry,
   type KeySentenceParagraph,
   type MarkdownQualityReport,
+  type SepEntryData,
   type SentenceSpan,
   type TermCandidate
 } from "./core.js";
 import {
   createLLMProvider,
+  type ChosenSepEntry,
   type ExplainTermInput,
   type ExplainedTerm,
   type KeySentenceParagraphInput,
   type KeySentenceDensity,
+  type LLMProvider,
   type PdfImportBackend,
-  type PhilosophyReaderSettings
+  type PhilosophyReaderSettings,
+  type SepSummary
 } from "./llmProviders";
+import {
+  fetchSepEntry,
+  pickSepCandidateHeuristically,
+  searchSep,
+  type ParsedSepEntry,
+  type RankedSepCandidate,
+  type SepSearchCandidate
+} from "./sep.js";
 
 const execFileAsync = promisify(execFile);
 const EXPLANATION_BATCH_SIZE = 2;
@@ -58,6 +70,7 @@ const KEY_SENTENCE_BATCH_SIZE = 6;
 const MAX_EXPLANATION_OCCURRENCES = 5;
 const EXPLANATION_EXCERPT_RADIUS = 350;
 const MAX_EXPLANATION_CLUSTERS = 3;
+const SEP_CANDIDATE_LIMIT = 5;
 
 const DEFAULT_SETTINGS: PhilosophyReaderSettings = {
   provider: "openai",
@@ -73,6 +86,7 @@ const DEFAULT_SETTINGS: PhilosophyReaderSettings = {
   maxPrecomputedTerms: 40,
   glossaryFolderName: "_glossary",
   glossaryExplanationLength: "standard",
+  sepEnrichmentEnabled: false,
   hoverDelayMs: 350,
   windowSize: 4,
   windowOverlap: 1,
@@ -91,6 +105,21 @@ interface RebuildOptions {
 
 interface ImportPdfOptions {
   precomputeGlossary?: boolean;
+}
+
+interface SepEnrichmentOptions {
+  background?: boolean;
+  provider?: LLMProvider;
+  requestedTerms?: string[];
+  writeStatus?: boolean;
+}
+
+interface SepEnrichmentSummary {
+  attempted: number;
+  matched: number;
+  notFound: number;
+  failed: number;
+  skipped: number;
 }
 
 interface ResolvedCommand {
@@ -129,7 +158,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
     await this.loadSettings();
 
     this.statusEl = this.addStatusBarItem();
-    this.statusEl.addClass("philosophy-reader-progress");
+    this.statusEl.addClass("scholia-progress");
     this.setStatus("");
 
     this.addSettingTab(new PhilosophyReaderSettingTab(this.app, this));
@@ -195,6 +224,22 @@ export default class PhilosophyReaderPlugin extends Plugin {
         }
         if (canRun) {
           void this.extractTermsAndExplain(file);
+        }
+        return canRun;
+      }
+    });
+
+    this.addCommand({
+      id: "enrich-glossary-with-sep-for-current-paper",
+      name: "Scholia: Enrich Glossary with SEP for Current Paper",
+      checkCallback: (checking) => {
+        const file = this.app.workspace.getActiveFile();
+        const canRun = file instanceof TFile && file.extension.toLowerCase() === "md";
+        if (checking) {
+          return canRun;
+        }
+        if (canRun) {
+          void this.enrichGlossaryWithSepForPaper(file, { background: false });
         }
         return canRun;
       }
@@ -368,6 +413,13 @@ export default class PhilosophyReaderPlugin extends Plugin {
           .onClick(() => {
             void this.extractTermsAndExplain(abstractFile);
           }));
+
+        menu.addItem((item) => item
+          .setTitle("Enrich Glossary with SEP")
+          .setIcon("book-open")
+          .onClick(() => {
+            void this.enrichGlossaryWithSepForPaper(abstractFile, { background: false });
+          }));
       }
     }));
   }
@@ -408,7 +460,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
 
   private renderPreparedTooltip(entry: GlossaryEntry, cluster: ContextCluster | null): HTMLElement {
     const root = document.createElement("div");
-    root.addClass("philosophy-reader-tooltip");
+    root.addClass("scholia-tooltip");
 
     const title = document.createElement("h4");
     title.setText(entry.term);
@@ -418,9 +470,29 @@ export default class PhilosophyReaderPlugin extends Plugin {
     definition.setText(entry.definition || "No definition was generated.");
     root.appendChild(definition);
 
+    if (entry.sep?.status === "matched" && entry.sep.summary) {
+      const label = document.createElement("div");
+      label.addClass("scholia-label");
+      label.setText("SEP");
+      root.appendChild(label);
+
+      const summary = document.createElement("p");
+      summary.setText(entry.sep.summary);
+      root.appendChild(summary);
+
+      if (entry.sep.entryUrl) {
+        const link = document.createElement("a");
+        link.href = entry.sep.entryUrl;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.setText(entry.sep.entryTitle || "Open SEP entry");
+        root.appendChild(link);
+      }
+    }
+
     if (cluster?.usageNote) {
       const label = document.createElement("div");
-      label.addClass("philosophy-reader-label");
+      label.addClass("scholia-label");
       label.setText(cluster.label || "This passage");
       root.appendChild(label);
 
@@ -434,14 +506,14 @@ export default class PhilosophyReaderPlugin extends Plugin {
 
   private renderUnpreparedTooltip(word: string, file: TFile): HTMLElement {
     const root = document.createElement("div");
-    root.addClass("philosophy-reader-tooltip");
+    root.addClass("scholia-tooltip");
 
     const title = document.createElement("h4");
     title.setText(word);
     root.appendChild(title);
 
     const message = document.createElement("p");
-    message.addClass("philosophy-reader-empty");
+    message.addClass("scholia-empty");
     message.setText("No prepared glossary entry yet.");
     root.appendChild(message);
 
@@ -922,6 +994,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
       const inputs = pendingTerms.map((term) => this.buildExplainTermInput(markdown, paragraphs, term));
       const batches = chunk(inputs, EXPLANATION_BATCH_SIZE);
       let completed = 0;
+      const writtenTerms = new Set<string>();
 
       for (const batch of batches) {
         this.setStatus(`Scholia: explaining terms ${completed + 1}-${completed + batch.length}/${inputs.length}`);
@@ -936,20 +1009,32 @@ export default class PhilosophyReaderPlugin extends Plugin {
           if (!input) {
             continue;
           }
-          await this.writeGlossaryEntry(file, this.toGlossaryEntry(file, provider.name, provider.model, input, explanation));
+          const entry = this.toGlossaryEntry(file, provider.name, provider.model, input, explanation);
+          await this.writeGlossaryEntry(file, entry);
+          writtenTerms.add(normalizeTerm(entry.term));
           completed += 1;
         }
       }
 
       this.glossaryCache.delete(file.path);
       await this.loadGlossaryIndex(file, true);
+      let sepSummary: SepEnrichmentSummary | null = null;
+      if (this.settings.sepEnrichmentEnabled && writtenTerms.size > 0) {
+        sepSummary = await this.enrichGlossaryWithSepForPaper(file, {
+          background: true,
+          provider,
+          requestedTerms: Array.from(writtenTerms),
+          writeStatus: false
+        });
+      }
       await this.writeGlossaryStatus(file, "ready", [
         `Completed: ${new Date().toISOString()}`,
         `New terms prepared: ${completed}`,
         `Provider: ${provider.name}`,
-        `Model: ${provider.model}`
+        `Model: ${provider.model}`,
+        ...this.buildSepStatusLines(sepSummary)
       ]);
-      new Notice(`Glossary prepared: ${completed} new term${completed === 1 ? "" : "s"}.`);
+      new Notice(buildGlossaryReadyNotice(completed, sepSummary));
     } catch (error) {
       await this.writeGlossaryStatus(file, "failed", [
         `Failed: ${new Date().toISOString()}`,
@@ -1016,6 +1101,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
       updated: now,
       definition: explanation.definition || "",
       clusters,
+      sep: null,
       sep_enabled: false
     };
   }
@@ -1038,13 +1124,282 @@ export default class PhilosophyReaderPlugin extends Plugin {
         terms: [input]
       });
       await this.ensureFolder(this.glossaryFolderPath(file));
-      await this.writeGlossaryEntry(file, this.toGlossaryEntry(file, provider.name, provider.model, input, explanation));
+      const entry = this.toGlossaryEntry(file, provider.name, provider.model, input, explanation);
+      await this.writeGlossaryEntry(file, entry);
       this.glossaryCache.delete(file.path);
-      new Notice(`Prepared glossary entry: ${explanation.term || selectedTerm}`);
+      let sepSummary: SepEnrichmentSummary | null = null;
+      if (this.settings.sepEnrichmentEnabled) {
+        sepSummary = await this.enrichGlossaryWithSepForPaper(file, {
+          background: true,
+          provider,
+          requestedTerms: [normalizeTerm(entry.term)],
+          writeStatus: false
+        });
+      }
+      new Notice(buildPreparedTermNotice(explanation.term || selectedTerm, sepSummary));
     } catch (error) {
       new Notice(`Explain Term Now failed: ${toErrorMessage(error)}`);
       console.error(error);
     }
+  }
+
+  private async enrichGlossaryWithSepForPaper(file: TFile, options: SepEnrichmentOptions = {}): Promise<SepEnrichmentSummary> {
+    const provider = options.provider || createLLMProvider(this.settings);
+    const writeStatus = options.writeStatus !== false;
+    const requestedTerms = new Set((options.requestedTerms || [])
+      .map((term) => normalizeTerm(term))
+      .filter(Boolean));
+    const summary: SepEnrichmentSummary = {
+      attempted: 0,
+      matched: 0,
+      notFound: 0,
+      failed: 0,
+      skipped: 0
+    };
+
+    try {
+      const index = await this.loadGlossaryIndex(file, true);
+      const matchingEntries = index.entries.filter((entry) => (
+        requestedTerms.size === 0 || requestedTerms.has(normalizeTerm(entry.term))
+      ));
+      const targets = matchingEntries.filter((entry) => (
+        entry.sep?.status !== "matched" && entry.sep?.status !== "not_found"
+      ));
+      summary.skipped = matchingEntries.length - targets.length;
+
+      if (writeStatus) {
+        await this.writeGlossaryStatus(file, "running", [
+          `SEP enrichment started: ${new Date().toISOString()}`,
+          `Provider: ${provider.name}`,
+          `Model: ${provider.model}`,
+          `Targets: ${targets.length}`
+        ]);
+      }
+
+      if (targets.length === 0) {
+        if (writeStatus) {
+          await this.writeGlossaryStatus(file, "ready", [
+            "SEP enrichment is already cached for the selected glossary entries.",
+            `Skipped entries: ${summary.skipped}`
+          ]);
+        }
+        if (!options.background) {
+          new Notice("SEP enrichment is already cached for the selected glossary entries.");
+        }
+        return summary;
+      }
+
+      for (let index = 0; index < targets.length; index += 1) {
+        const target = targets[index];
+        summary.attempted += 1;
+        this.setStatus(`Scholia: enriching glossary with SEP ${index + 1}/${targets.length}`);
+
+        try {
+          const sep = await this.buildSepDataForEntry(file, target, provider);
+          await this.writeGlossaryEntry(file, {
+            ...target,
+            updated: new Date().toISOString(),
+            sep,
+            sep_enabled: sep.status === "matched"
+          });
+
+          if (sep.status === "matched") {
+            summary.matched += 1;
+          } else if (sep.status === "not_found") {
+            summary.notFound += 1;
+          } else {
+            summary.failed += 1;
+          }
+        } catch (error) {
+          summary.failed += 1;
+          const sep = this.buildFailedSepData(target.term, target.term, error);
+          await this.writeGlossaryEntry(file, {
+            ...target,
+            updated: new Date().toISOString(),
+            sep,
+            sep_enabled: false
+          });
+        }
+      }
+
+      this.glossaryCache.delete(file.path);
+      await this.loadGlossaryIndex(file, true);
+
+      if (writeStatus) {
+        await this.writeGlossaryStatus(file, "ready", [
+          `SEP enrichment completed: ${new Date().toISOString()}`,
+          ...this.buildSepStatusLines(summary)
+        ]);
+      }
+
+      if (!options.background) {
+        new Notice(buildSepNotice(summary));
+      }
+
+      return summary;
+    } catch (error) {
+      if (writeStatus) {
+        await this.writeGlossaryStatus(file, "failed", [
+          `SEP enrichment failed: ${new Date().toISOString()}`,
+          toErrorMessage(error)
+        ]);
+      }
+      if (!options.background) {
+        new Notice(`SEP enrichment failed: ${toErrorMessage(error)}`);
+      }
+      console.error(error);
+      return summary;
+    } finally {
+      this.setStatus("");
+    }
+  }
+
+  private async buildSepDataForEntry(file: TFile, entry: GlossaryEntry, provider: LLMProvider): Promise<SepEntryData> {
+    const now = new Date().toISOString();
+    const queries = Array.from(new Set([entry.term, ...(entry.aliases || [])]
+      .map((term) => String(term || "").trim())
+      .filter(Boolean)));
+    let usedQuery = entry.term;
+    let candidates: SepSearchCandidate[] = [];
+
+    for (const query of queries) {
+      usedQuery = query;
+      candidates = (await searchSep(query)).slice(0, SEP_CANDIDATE_LIMIT);
+      if (candidates.length > 0) {
+        break;
+      }
+    }
+
+    if (candidates.length === 0) {
+      return {
+        status: "not_found",
+        query: usedQuery,
+        entryTitle: "",
+        entryUrl: "",
+        summary: "",
+        sourceExcerpt: "",
+        revised: "",
+        fetchedAt: now
+      };
+    }
+
+    const heuristic = pickSepCandidateHeuristically(candidates, entry.term, entry.aliases);
+    let chosenCandidate = heuristic.candidate;
+
+    if (!chosenCandidate) {
+      const choice = await provider.chooseSepEntry({
+        paperTitle: getBaseName(file.path),
+        sourcePaper: file.path,
+        term: entry.term,
+        aliases: entry.aliases || [],
+        definition: entry.definition,
+        clusters: entry.clusters || [],
+        candidates: heuristic.candidates.map(({ score, ...candidate }) => candidate)
+      });
+      chosenCandidate = this.resolveChosenSepCandidate(choice, heuristic.candidates);
+      if (!chosenCandidate) {
+        return {
+          status: "not_found",
+          query: usedQuery,
+          entryTitle: "",
+          entryUrl: "",
+          summary: "",
+          sourceExcerpt: "",
+          revised: "",
+          fetchedAt: now
+        };
+      }
+    }
+
+    const sepEntry = await fetchSepEntry(chosenCandidate.url);
+    if (!sepEntry.preamble.trim()) {
+      return this.buildFailedSepData(entry.term, usedQuery, new Error("SEP entry did not include a readable preamble."));
+    }
+    const summary = await provider.summarizeSepEntry({
+      paperTitle: getBaseName(file.path),
+      sourcePaper: file.path,
+      term: entry.term,
+      definition: entry.definition,
+      entryTitle: sepEntry.title || chosenCandidate.title,
+      entryUrl: chosenCandidate.url,
+      preamble: sepEntry.preamble
+    });
+    return this.buildMatchedSepData(usedQuery, chosenCandidate, sepEntry, summary, now);
+  }
+
+  private resolveChosenSepCandidate(choice: ChosenSepEntry, candidates: RankedSepCandidate[]): RankedSepCandidate | null {
+    if (!choice.matched) {
+      return null;
+    }
+
+    const byUrl = candidates.find((candidate) => candidate.url === choice.url);
+    if (byUrl) {
+      return byUrl;
+    }
+
+    const normalizedTitle = normalizeTerm(choice.title);
+    const byTitle = candidates.find((candidate) => normalizeTerm(candidate.title) === normalizedTitle);
+    if (byTitle) {
+      return byTitle;
+    }
+
+    if (!choice.url.startsWith("https://plato.stanford.edu/entries/")) {
+      return null;
+    }
+
+    return {
+      title: choice.title,
+      url: choice.url,
+      snippet: "",
+      normalizedTitle,
+      score: 0
+    };
+  }
+
+  private buildMatchedSepData(
+    query: string,
+    candidate: RankedSepCandidate,
+    sepEntry: ParsedSepEntry,
+    summary: SepSummary,
+    fetchedAt: string
+  ): SepEntryData {
+    return {
+      status: "matched",
+      query,
+      entryTitle: sepEntry.title || candidate.title,
+      entryUrl: candidate.url,
+      summary: summary.summary,
+      sourceExcerpt: sepEntry.sourceExcerpt || sepEntry.preamble,
+      revised: sepEntry.revised || "",
+      fetchedAt
+    };
+  }
+
+  private buildFailedSepData(term: string, query: string, error: unknown): SepEntryData {
+    return {
+      status: "failed",
+      query: query || term,
+      entryTitle: "",
+      entryUrl: "",
+      summary: "",
+      sourceExcerpt: "",
+      revised: "",
+      fetchedAt: new Date().toISOString(),
+      error: toErrorMessage(error)
+    };
+  }
+
+  private buildSepStatusLines(summary: SepEnrichmentSummary | null): string[] {
+    if (!summary) {
+      return [];
+    }
+    return [
+      `SEP attempted: ${summary.attempted}`,
+      `SEP matched: ${summary.matched}`,
+      `SEP not found: ${summary.notFound}`,
+      `SEP failed: ${summary.failed}`,
+      `SEP skipped: ${summary.skipped}`
+    ];
   }
 
   private async writeGlossaryEntry(file: TFile, entry: GlossaryEntry): Promise<void> {
@@ -1478,6 +1833,16 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
         }));
 
     new Setting(containerEl)
+      .setName("Enable SEP enrichment")
+      .setDesc("After glossary entries are prepared, fetch matching Stanford Encyclopedia of Philosophy introductions and cache a short SEP supplement for hover.")
+      .addToggle((toggle) => toggle
+        .setValue(this.plugin.settings.sepEnrichmentEnabled)
+        .onChange(async (value) => {
+          this.plugin.settings.sepEnrichmentEnabled = value;
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
       .setName("Hover delay")
       .setDesc("Milliseconds before the hover tooltip appears. Reload Obsidian after changing this.")
       .addSlider((slider) => slider
@@ -1489,6 +1854,38 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
   }
+}
+
+function buildGlossaryReadyNotice(completed: number, sepSummary: SepEnrichmentSummary | null): string {
+  const base = `Glossary prepared: ${completed} new term${completed === 1 ? "" : "s"}.`;
+  if (!sepSummary || sepSummary.attempted === 0) {
+    return base;
+  }
+  return `${base} SEP matched ${sepSummary.matched}/${sepSummary.attempted}.`;
+}
+
+function buildPreparedTermNotice(term: string, sepSummary: SepEnrichmentSummary | null): string {
+  const base = `Prepared glossary entry: ${term}`;
+  if (!sepSummary || sepSummary.attempted === 0) {
+    return base;
+  }
+  if (sepSummary.matched > 0) {
+    return `${base}. SEP summary cached.`;
+  }
+  if (sepSummary.notFound > 0) {
+    return `${base}. No SEP entry matched.`;
+  }
+  if (sepSummary.failed > 0) {
+    return `${base}. SEP enrichment failed.`;
+  }
+  return base;
+}
+
+function buildSepNotice(summary: SepEnrichmentSummary): string {
+  if (summary.attempted === 0) {
+    return "SEP enrichment is already cached for the selected glossary entries.";
+  }
+  return `SEP enrichment complete: ${summary.matched} matched, ${summary.notFound} not found, ${summary.failed} failed, ${summary.skipped} skipped.`;
 }
 
 function joinVaultPath(...parts: string[]): string {
