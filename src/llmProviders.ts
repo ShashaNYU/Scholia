@@ -1,11 +1,14 @@
 import { requestUrl } from "obsidian";
 import batchExplanationPrompt from "../prompts/batch-explanation.md";
 import fallbackExplanationPrompt from "../prompts/fallback-explanation.md";
+import keySentenceSelectionPrompt from "../prompts/key-sentence-selection.md";
 import termDiscoveryPrompt from "../prompts/term-discovery.md";
 import { parseJsonFromText, parseLooseJsonFromText, type ContextCluster, type ParagraphWindow, type TermCandidate } from "./core.js";
 
 export type ProviderName = "openai" | "anthropic";
-export type PdfImportBackend = "pdfjs" | "markitdown" | "marker";
+export type PdfImportBackend = "pdfjs" | "scholar-md" | "marker";
+export type GlossaryExplanationLength = "standard" | "brief";
+export type KeySentenceDensity = "sparse" | "medium";
 
 export interface PhilosophyReaderSettings {
   provider: ProviderName;
@@ -14,13 +17,16 @@ export interface PhilosophyReaderSettings {
   openaiModel: string;
   anthropicModel: string;
   pdfImportBackend: PdfImportBackend;
-  markitdownCommand: string;
+  scholarMdCommand: string;
   markerCommand: string;
   maxPrecomputedTerms: number;
   glossaryFolderName: string;
+  glossaryExplanationLength: GlossaryExplanationLength;
   hoverDelayMs: number;
   windowSize: number;
   windowOverlap: number;
+  autoHighlightKeySentences: boolean;
+  keySentenceDensity: KeySentenceDensity;
 }
 
 export interface DiscoverTermsRequest {
@@ -49,6 +55,31 @@ export interface ExplainTermsRequest {
   terms: ExplainTermInput[];
 }
 
+export interface KeySentenceInput {
+  id: string;
+  text: string;
+}
+
+export interface KeySentenceParagraphInput {
+  paragraphId: string;
+  paragraphIndex: number;
+  heading: string;
+  text: string;
+  sentences: KeySentenceInput[];
+}
+
+export interface SelectKeySentencesRequest {
+  paperTitle: string;
+  sourcePaper: string;
+  density: KeySentenceDensity;
+  paragraphs: KeySentenceParagraphInput[];
+}
+
+export interface SelectedKeySentence {
+  paragraphId: string;
+  sentenceId: string;
+}
+
 export interface ExplainedCluster {
   id: string;
   usageNote: string;
@@ -69,13 +100,19 @@ export interface LLMProvider {
   discoverTerms(request: DiscoverTermsRequest): Promise<TermCandidate[]>;
   explainTerms(request: ExplainTermsRequest): Promise<ExplainedTerm[]>;
   explainTermFallback(request: ExplainTermsRequest): Promise<ExplainedTerm>;
+  selectKeySentences(request: SelectKeySentencesRequest): Promise<SelectedKeySentence[]>;
 }
 
 type JsonSchema = Record<string, unknown>;
 
 abstract class BaseProvider implements LLMProvider {
+  protected readonly explanationLength: GlossaryExplanationLength;
   abstract readonly name: ProviderName;
   abstract readonly model: string;
+
+  constructor(explanationLength: GlossaryExplanationLength) {
+    this.explanationLength = explanationLength;
+  }
 
   abstract callModel(systemPrompt: string, userPrompt: string, maxTokens: number): Promise<string>;
   async callJsonModel(systemPrompt: string, userPrompt: string, maxTokens: number, schema: JsonSchema): Promise<unknown> {
@@ -99,7 +136,7 @@ abstract class BaseProvider implements LLMProvider {
       sourcePaper: request.sourcePaper,
       terms: request.terms
     }, null, 2);
-    const json = await this.callJsonModel(batchExplanationPrompt, userPrompt, 5000, batchExplanationSchema);
+    const json = await this.callJsonModel(buildBatchExplanationPrompt(this.explanationLength), userPrompt, 5000, batchExplanationSchema);
     return readTermsArray<ExplainedTerm>(json, "Batch explanation response");
   }
 
@@ -109,37 +146,52 @@ abstract class BaseProvider implements LLMProvider {
       sourcePaper: request.sourcePaper,
       term: request.terms[0]
     }, null, 2);
-    const json = await this.callJsonModel(fallbackExplanationPrompt, userPrompt, 1800, fallbackExplanationSchema) as ExplainedTerm;
+    const json = await this.callJsonModel(buildFallbackExplanationPrompt(this.explanationLength), userPrompt, 1800, fallbackExplanationSchema) as ExplainedTerm;
     if (!json || !json.term || !json.definition) {
       throw new Error("Fallback explanation response did not include a term definition.");
     }
     return json;
   }
+
+  async selectKeySentences(request: SelectKeySentencesRequest): Promise<SelectedKeySentence[]> {
+    const userPrompt = JSON.stringify({
+      paperTitle: request.paperTitle,
+      sourcePaper: request.sourcePaper,
+      density: request.density,
+      paragraphs: request.paragraphs
+    }, null, 2);
+    const json = await this.callJsonModel(keySentenceSelectionPrompt, userPrompt, 2600, keySentenceSelectionSchema);
+    return readArrayField<SelectedKeySentence>(json, "paragraphs", "Key sentence selection response");
+  }
 }
 
-function readTermsArray<T>(json: unknown, context: string): T[] {
+function readArrayField<T>(json: unknown, fieldName: string, context: string): T[] {
   if (Array.isArray(json)) {
     return json as T[];
   }
   if (!json || typeof json !== "object") {
-    throw new Error(`${context} did not include a terms array.`);
+    throw new Error(`${context} did not include a ${fieldName} array.`);
   }
 
-  const terms = (json as { terms?: unknown }).terms;
-  if (Array.isArray(terms)) {
-    return terms as T[];
+  const value = (json as Record<string, unknown>)[fieldName];
+  if (Array.isArray(value)) {
+    return value as T[];
   }
-  if (typeof terms === "string" && terms.trim()) {
-    const parsed = parseLooseJsonFromText(terms);
+  if (typeof value === "string" && value.trim()) {
+    const parsed = parseLooseJsonFromText(value);
     if (Array.isArray(parsed)) {
       return parsed as T[];
     }
-    if (parsed && typeof parsed === "object" && Array.isArray((parsed as { terms?: unknown }).terms)) {
-      return (parsed as { terms: T[] }).terms;
+    if (parsed && typeof parsed === "object" && Array.isArray((parsed as Record<string, unknown>)[fieldName])) {
+      return (parsed as Record<string, T[]>)[fieldName];
     }
   }
 
-  throw new Error(`${context} did not include a terms array.`);
+  throw new Error(`${context} did not include a ${fieldName} array.`);
+}
+
+function readTermsArray<T>(json: unknown, context: string): T[] {
+  return readArrayField<T>(json, "terms", context);
 }
 
 class OpenAIProvider extends BaseProvider {
@@ -147,8 +199,8 @@ class OpenAIProvider extends BaseProvider {
   readonly model: string;
   private readonly apiKey: string;
 
-  constructor(apiKey: string, model: string) {
-    super();
+  constructor(apiKey: string, model: string, explanationLength: GlossaryExplanationLength) {
+    super(explanationLength);
     this.apiKey = apiKey;
     this.model = model;
   }
@@ -187,8 +239,8 @@ class AnthropicProvider extends BaseProvider {
   readonly model: string;
   private readonly apiKey: string;
 
-  constructor(apiKey: string, model: string) {
-    super();
+  constructor(apiKey: string, model: string, explanationLength: GlossaryExplanationLength) {
+    super(explanationLength);
     this.apiKey = apiKey;
     this.model = model;
   }
@@ -341,6 +393,45 @@ function isEmptyObject(value: unknown): boolean {
   return !!value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 0;
 }
 
+interface ExplanationPromptVariant {
+  definitionRequirement: string;
+  authorUsageRequirement: string;
+  firstUseRequirement: string;
+  clusterRequirement: string;
+}
+
+const explanationPromptVariants: Record<GlossaryExplanationLength, ExplanationPromptVariant> = {
+  standard: {
+    definitionRequirement: "Write a paper-level definition of about 80-120 words.",
+    authorUsageRequirement: "Explain how the author appears to use the term in this paper.",
+    firstUseRequirement: "If a first definition or first important use is visible in the supplied excerpts, identify it briefly.",
+    clusterRequirement: "Write one short usage note for each supplied context cluster. The usage note should explain what the term is doing in that passage or section."
+  },
+  brief: {
+    definitionRequirement: "Write a brief definition of about 18-32 words that only explains the term's meaning in this paper.",
+    authorUsageRequirement: "Keep authorUsage empty unless the paper uses the term in a clearly unusual or contrastive way that is necessary to understand the meaning.",
+    firstUseRequirement: "Keep firstUse empty unless the supplied context shows an explicit first definition that is necessary to understand the term.",
+    clusterRequirement: "For each supplied context cluster, leave usageNote empty unless that passage materially changes the meaning; if needed, keep it to one very short sentence."
+  }
+};
+
+function buildBatchExplanationPrompt(explanationLength: GlossaryExplanationLength): string {
+  return renderExplanationPrompt(batchExplanationPrompt, explanationLength);
+}
+
+function buildFallbackExplanationPrompt(explanationLength: GlossaryExplanationLength): string {
+  return renderExplanationPrompt(fallbackExplanationPrompt, explanationLength);
+}
+
+function renderExplanationPrompt(template: string, explanationLength: GlossaryExplanationLength): string {
+  const variant = explanationPromptVariants[explanationLength] || explanationPromptVariants.standard;
+  return template
+    .replace("{{DEFINITION_REQUIREMENT}}", variant.definitionRequirement)
+    .replace("{{AUTHOR_USAGE_REQUIREMENT}}", variant.authorUsageRequirement)
+    .replace("{{FIRST_USE_REQUIREMENT}}", variant.firstUseRequirement)
+    .replace("{{CLUSTER_REQUIREMENT}}", variant.clusterRequirement);
+}
+
 const termDiscoverySchema: JsonSchema = {
   type: "object",
   additionalProperties: false,
@@ -388,6 +479,28 @@ const explainedTermSchema: JsonSchema = {
   required: ["term", "aliases", "definition", "authorUsage", "firstUse", "clusters"]
 };
 
+const selectedKeySentenceSchema: JsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    paragraphId: { type: "string" },
+    sentenceId: { type: "string" }
+  },
+  required: ["paragraphId", "sentenceId"]
+};
+
+const keySentenceSelectionSchema: JsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    paragraphs: {
+      type: "array",
+      items: selectedKeySentenceSchema
+    }
+  },
+  required: ["paragraphs"]
+};
+
 const batchExplanationSchema: JsonSchema = {
   type: "object",
   additionalProperties: false,
@@ -404,7 +517,7 @@ const fallbackExplanationSchema: JsonSchema = explainedTermSchema;
 
 export function createLLMProvider(settings: PhilosophyReaderSettings): LLMProvider {
   if (settings.provider === "anthropic") {
-    return new AnthropicProvider(settings.anthropicApiKey, settings.anthropicModel);
+    return new AnthropicProvider(settings.anthropicApiKey, settings.anthropicModel, settings.glossaryExplanationLength);
   }
-  return new OpenAIProvider(settings.openaiApiKey, settings.openaiModel);
+  return new OpenAIProvider(settings.openaiApiKey, settings.openaiModel, settings.glossaryExplanationLength);
 }

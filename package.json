@@ -7,7 +7,9 @@
     "dev": "node esbuild.config.mjs",
     "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
     "test": "node --test tests/*.test.cjs",
-    "eval:pdf-tools": "node eval/pdf-tools/run-eval.mjs"
+    "test:scholar-md": "./.venv/bin/python -m unittest discover -s tools/scholar-md/tests",
+    "eval:pdf-tools": "node eval/pdf-tools/run-eval.mjs",
+    "bootstrap:scholar-md": "tools/scholar-md/bootstrap.sh"
   },
   "keywords": [
     "obsidian",

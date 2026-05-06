@@ -13,7 +13,7 @@ def require_fitz() -> Any:
     except ImportError as exc:
         raise RuntimeError(
             "PyMuPDF is required for PDF extraction. Install with: "
-            "python3 -m pip install -e tools/scholar-md"
+            "tools/scholar-md/bootstrap.sh"
         ) from exc
     return fitz
 

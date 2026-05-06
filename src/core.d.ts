@@ -2,6 +2,7 @@ export interface Paragraph {
   index: number;
   start: number;
   end: number;
+  raw: string;
   text: string;
   heading: string;
 }
@@ -23,6 +24,26 @@ export interface TermCandidate {
   frequency?: number;
   paragraphIndexes?: number[];
   score?: number;
+}
+
+export interface SentenceSpan {
+  id: string;
+  paragraphId: string;
+  paragraphIndex: number;
+  startOffset: number;
+  endOffset: number;
+  rawText: string;
+  text: string;
+}
+
+export interface KeySentenceParagraph {
+  id: string;
+  paragraphIndex: number;
+  heading: string;
+  text: string;
+  startOffset: number;
+  endOffset: number;
+  sentences: SentenceSpan[];
 }
 
 export interface ContextCluster {
@@ -71,8 +92,10 @@ export interface MarkdownQualityReport {
 }
 
 export function analyzeMarkdownQuality(markdown: string): MarkdownQualityReport;
+export function applySentenceHighlights(markdown: string, sentences: SentenceSpan[]): string;
 export function buildContextClusters(markdown: string, paragraphs: Paragraph[], termCandidate: TermCandidate, maxClusters?: number): ContextCluster[];
 export function buildGlossaryMarkdown(entry: Partial<GlossaryEntry> & { term: string }): string;
+export function buildKeySentenceParagraphs(markdown: string, paragraphs: Paragraph[], minParagraphChars?: number): KeySentenceParagraph[];
 export function buildParagraphWindows(paragraphs: Paragraph[], size?: number, overlap?: number): ParagraphWindow[];
 export function chooseClusterForOffset(entry: { clusters?: ContextCluster[] }, offset: number): ContextCluster | null;
 export function collectEntryTerms(entry: GlossaryEntry): string[];
@@ -87,7 +110,9 @@ export function normalizeTerm(term: string): string;
 export function parseGlossaryMarkdown(markdown: string): GlossaryEntry | null;
 export function parseJsonFromText(text: string): unknown;
 export function parseLooseJsonFromText(text: string): unknown;
+export function removeManagedSentenceHighlights(markdown: string, records: Array<{ paragraphIndex: number; text: string }>): string;
 export function slugify(value: string, fallback?: string): string;
+export function splitParagraphSentences(markdown: string, paragraph: Paragraph): SentenceSpan[];
 export function splitParagraphs(markdown: string): Paragraph[];
 export function stripFrontmatter(markdown: string): { content: string; offset: number };
 export function stripMarkdown(value: string): string;

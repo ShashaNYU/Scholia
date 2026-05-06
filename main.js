@@ -57,6 +57,8 @@ var require_core = __commonJS({
   "src/core.js"(exports, module2) {
     "use strict";
     var WORD_BOUNDARY_RE = /[A-Za-z0-9_-]/;
+    var SENTENCE_SEGMENTER = typeof Intl !== "undefined" && typeof Intl.Segmenter === "function" ? new Intl.Segmenter("en", { granularity: "sentence" }) : null;
+    var MIN_KEY_SENTENCE_PARAGRAPH_CHARS = 80;
     function stripFrontmatter(markdown) {
       if (!markdown.startsWith("---\n")) {
         return { content: markdown, offset: 0 };
@@ -124,6 +126,7 @@ var require_core = __commonJS({
           index,
           start,
           end,
+          raw,
           text,
           heading: currentHeading
         });
@@ -153,6 +156,120 @@ var require_core = __commonJS({
         }
       }
       return windows;
+    }
+    function paragraphIdForIndex(index) {
+      return `p-${index}`;
+    }
+    function segmentSentences(text) {
+      const raw = String(text || "");
+      if (!raw) {
+        return [];
+      }
+      if (SENTENCE_SEGMENTER && !raw.includes("==")) {
+        return Array.from(SENTENCE_SEGMENTER.segment(raw), (item) => ({
+          index: item.index,
+          segment: item.segment
+        }));
+      }
+      const segments = [];
+      let start = 0;
+      for (let index = 0; index < raw.length; index += 1) {
+        if (!/[.!?]/.test(raw[index])) {
+          continue;
+        }
+        let end = index + 1;
+        while (end < raw.length) {
+          if (raw.slice(end, end + 2) === "==") {
+            end += 2;
+            continue;
+          }
+          if (/["')\]]/.test(raw[end])) {
+            end += 1;
+            continue;
+          }
+          break;
+        }
+        if (end < raw.length && !/\s/.test(raw[end])) {
+          continue;
+        }
+        while (end < raw.length && /\s/.test(raw[end])) {
+          end += 1;
+        }
+        segments.push({
+          index: start,
+          segment: raw.slice(start, end)
+        });
+        start = end;
+      }
+      if (start < raw.length) {
+        segments.push({
+          index: start,
+          segment: raw.slice(start)
+        });
+      }
+      return segments;
+    }
+    function normalizeSentenceText(value) {
+      return stripMarkdown(value).replace(/\s+/g, " ").trim().toLowerCase();
+    }
+    function splitParagraphSentences(markdown, paragraph) {
+      if (!paragraph || !Number.isFinite(paragraph.start) || !Number.isFinite(paragraph.end)) {
+        return [];
+      }
+      const rawParagraph = String(markdown || "").slice(paragraph.start, paragraph.end);
+      const paragraphId = paragraphIdForIndex(paragraph.index);
+      const sentences = [];
+      for (const item of segmentSentences(rawParagraph)) {
+        let start = item.index;
+        let end = item.index + item.segment.length;
+        while (start < end && /\s/.test(rawParagraph[start])) {
+          start += 1;
+        }
+        while (end > start && /\s/.test(rawParagraph[end - 1])) {
+          end -= 1;
+        }
+        if (end <= start) {
+          continue;
+        }
+        const rawText = rawParagraph.slice(start, end);
+        const text = stripMarkdown(rawText).replace(/\s+/g, " ").trim();
+        if (text.length < 20) {
+          continue;
+        }
+        sentences.push({
+          id: `${paragraphId}-s-${sentences.length + 1}`,
+          paragraphId,
+          paragraphIndex: paragraph.index,
+          startOffset: paragraph.start + start,
+          endOffset: paragraph.start + end,
+          rawText,
+          text
+        });
+      }
+      return sentences;
+    }
+    function buildKeySentenceParagraphs2(markdown, paragraphs, minParagraphChars) {
+      const safeMinParagraphChars = Math.max(40, Number(minParagraphChars) || MIN_KEY_SENTENCE_PARAGRAPH_CHARS);
+      const candidates = [];
+      for (const paragraph of paragraphs || []) {
+        if (!paragraph || String(paragraph.text || "").length < safeMinParagraphChars) {
+          continue;
+        }
+        const sentences = splitParagraphSentences(markdown, paragraph).filter((sentence) => !String(sentence.rawText || "").includes("=="));
+        if (sentences.length < 2) {
+          continue;
+        }
+        candidates.push({
+          id: paragraphIdForIndex(paragraph.index),
+          paragraphIndex: paragraph.index,
+          heading: paragraph.heading || "",
+          text: paragraph.text,
+          startOffset: paragraph.start,
+          endOffset: paragraph.end,
+          sentences
+        });
+      }
+      return candidates;
     }
     function mergeTermCandidates2(candidates, maxTerms) {
       const byTerm = /* @__PURE__ */ new Map();
@@ -304,6 +421,79 @@ var require_core = __commonJS({
         return containing;
       }
       return clusters.slice().sort((a, b) => Math.abs(a.startOffset - offset) - Math.abs(b.startOffset - offset))[0];
+    }
+    function isWrappedSentenceHighlight(text) {
+      const raw = String(text || "");
+      return raw.startsWith("==") && raw.endsWith("==") && raw.length > 4;
+    }
+    function applySentenceHighlights2(markdown, sentences) {
+      let output = String(markdown || "");
+      const seen = /* @__PURE__ */ new Set();
+      const ordered = (Array.isArray(sentences) ? sentences : []).filter((sentence) => sentence && Number.isFinite(sentence.startOffset) && Number.isFinite(sentence.endOffset)).filter((sentence) => {
+        const key = `${sentence.startOffset}:${sentence.endOffset}`;
+        if (seen.has(key)) {
+          return false;
+        }
+        seen.add(key);
+        return true;
+      }).sort((a, b) => b.startOffset - a.startOffset);
+      for (const sentence of ordered) {
+        const snippet = output.slice(sentence.startOffset, sentence.endOffset);
+        if (!snippet) {
+          continue;
+        }
+        if (isWrappedSentenceHighlight(snippet) || snippet.includes("==")) {
+          continue;
+        }
+        output = `${output.slice(0, sentence.startOffset)}==${snippet}==${output.slice(sentence.endOffset)}`;
+      }
+      return output;
+    }
+    function removeManagedSentenceHighlights2(markdown, records) {
+      const source = String(markdown || "");
+      if (!Array.isArray(records) || records.length === 0) {
+        return source;
+      }
+      const byParagraph = /* @__PURE__ */ new Map();
+      for (const record of records) {
+        const paragraphIndex = Number(record && record.paragraphIndex);
+        const text = normalizeSentenceText(record && record.text);
+        if (!Number.isFinite(paragraphIndex) || !text) {
+          continue;
+        }
+        const existing = byParagraph.get(paragraphIndex) || [];
+        existing.push(text);
+        byParagraph.set(paragraphIndex, existing);
+      }
+      const matches = [];
+      for (const paragraph of splitParagraphs2(source)) {
+        const targets = byParagraph.get(paragraph.index);
+        if (!targets || targets.length === 0) {
+          continue;
+        }
+        const remaining = targets.slice();
+        for (const sentence of splitParagraphSentences(source, paragraph)) {
+          if (!isWrappedSentenceHighlight(sentence.rawText)) {
+            continue;
+          }
+          const normalized = normalizeSentenceText(sentence.text);
+          const targetIndex = remaining.indexOf(normalized);
+          if (targetIndex === -1) {
+            continue;
+          }
+          remaining.splice(targetIndex, 1);
+          matches.push(sentence);
+        }
+      }
+      let output = source;
+      matches.sort((a, b) => b.startOffset - a.startOffset).forEach((sentence) => {
+        const snippet = output.slice(sentence.startOffset, sentence.endOffset);
+        if (!isWrappedSentenceHighlight(snippet)) {
+          return;
+        }
+        output = `${output.slice(0, sentence.startOffset)}${snippet.slice(2, -2)}${output.slice(sentence.endOffset)}`;
+      });
+      return output;
     }
     function jsonCandidateFromText(text) {
       const raw = String(text || "").trim();
@@ -596,8 +786,10 @@ ${usageNotes}
     }
     module2.exports = {
       analyzeMarkdownQuality: analyzeMarkdownQuality2,
+      applySentenceHighlights: applySentenceHighlights2,
       buildContextClusters: buildContextClusters2,
       buildGlossaryMarkdown: buildGlossaryMarkdown2,
+      buildKeySentenceParagraphs: buildKeySentenceParagraphs2,
       buildParagraphWindows: buildParagraphWindows2,
       chooseClusterForOffset: chooseClusterForOffset2,
       collectEntryTerms,
@@ -612,7 +804,9 @@ ${usageNotes}
       parseGlossaryMarkdown: parseGlossaryMarkdown2,
       parseJsonFromText: parseJsonFromText2,
       parseLooseJsonFromText: parseLooseJsonFromText2,
+      removeManagedSentenceHighlights: removeManagedSentenceHighlights2,
       slugify: slugify2,
+      splitParagraphSentences,
       splitParagraphs: splitParagraphs2,
       stripFrontmatter,
       stripMarkdown
@@ -98430,10 +98624,10 @@ var batch_explanation_default = `You are writing concise hover glossary entries 
 The user will read the paper in Obsidian. Your job is to explain each selected term in English, using the paper context rather than a generic dictionary definition.
 
 For each term:
-- Write a paper-level definition of about 80-120 words.
-- Explain how the author appears to use the term in this paper.
-- If a first definition or first important use is visible in the supplied excerpts, identify it briefly.
-- Write one short usage note for each supplied context cluster. The usage note should explain what the term is doing in that passage or section.
+- {{DEFINITION_REQUIREMENT}}
+- {{AUTHOR_USAGE_REQUIREMENT}}
+- {{FIRST_USE_REQUIREMENT}}
+- {{CLUSTER_REQUIREMENT}}
 - Do not mention SEP. SEP integration is disabled in this MVP.
 - Do not invent certainty. If the context is insufficient, say so briefly.
 - Paraphrase source passages instead of quoting them. Avoid quotation marks inside string values.
@@ -98444,7 +98638,7 @@ Return JSON only:
     {
       "term": "canonical term",
       "aliases": ["aliases"],
-      "definition": "80-120 word definition grounded in the paper",
+      "definition": "definition grounded in the paper",
       "authorUsage": "one sentence about the author's usage",
       "firstUse": "first definition/use if supported, otherwise empty string",
       "clusters": [
@@ -98467,17 +98661,18 @@ var fallback_explanation_default = `You are writing a concise hover glossary ent
 Explain the selected term in English using the supplied surrounding context.
 
 Requirements:
-- About 80-120 words.
+- {{DEFINITION_REQUIREMENT}}
 - Ground the explanation in this paper's usage.
-- Include a short author/context usage note.
-- If the supplied context suggests where the term is first defined or first importantly used, say so.
+- {{AUTHOR_USAGE_REQUIREMENT}}
+- {{FIRST_USE_REQUIREMENT}}
+- {{CLUSTER_REQUIREMENT}}
 - Do not mention SEP. SEP integration is disabled in this MVP.
 
 Return JSON only:
 {
   "term": "canonical term",
   "aliases": ["aliases"],
-  "definition": "80-120 word definition grounded in the paper",
+  "definition": "definition grounded in the paper",
   "authorUsage": "one sentence about the author's usage",
   "firstUse": "first definition/use if supported, otherwise empty string",
   "clusters": [
@@ -98488,6 +98683,9 @@ Return JSON only:
   ]
 }
 `;
+
+// prompts/key-sentence-selection.md
+var key_sentence_selection_default = 'You are helping prepare a philosophy or humanities paper for easier reading in Obsidian.\n\nTask: for each paragraph, choose sentences worth highlighting before the user reads the paper.\n\nThe input includes a `density` value:\n- `medium`: choose at most one sentence from a paragraph when one sentence clearly helps the reader track the claim, distinction, definition, objection, or argumentative turn.\n- `sparse`: be much more selective. Choose only sentences that state a central thesis, important definition, decisive objection, or major transition in the argument. Omit most paragraphs.\n\nPrefer sentences that do at least one of these:\n- State the main claim, local thesis, or argumentative turn.\n- Introduce a key distinction, definition, objection, or methodological move.\n- Compress the paragraph\'s main takeaway into one sentence.\n\nDo not choose a sentence when:\n- The paragraph is mostly setup, citation, transition, example, restatement, or low-information prose.\n- No single sentence is clearly more important than the rest.\n- The best sentence would be too fragmentary without its neighbors.\n- In `sparse` mode, the sentence is merely useful rather than structurally important.\n\nConstraints:\n- Return at most one sentence per paragraph.\n- Use only the provided `paragraphId` and `sentenceId` values.\n- Omit paragraphs where no sentence deserves highlighting.\n- Do not quote or rewrite the sentence text.\n\nReturn JSON only:\n{\n  "paragraphs": [\n    {\n      "paragraphId": "p-3",\n      "sentenceId": "p-3-s-2"\n    }\n  ]\n}\n';
 
 // prompts/term-discovery.md
 var term_discovery_default = `You are helping prepare a philosophy or humanities paper for faster reading.
@@ -98527,6 +98725,9 @@ Use the paragraph indexes from the input.
 // src/llmProviders.ts
 var import_core = __toESM(require_core());
 var BaseProvider = class {
+  constructor(explanationLength) {
+    this.explanationLength = explanationLength;
+  }
   async callJsonModel(systemPrompt, userPrompt, maxTokens, schema) {
     const text = await this.callModel(systemPrompt, userPrompt, maxTokens);
     return (0, import_core.parseJsonFromText)(text);
@@ -98546,7 +98747,7 @@ var BaseProvider = class {
       sourcePaper: request.sourcePaper,
       terms: request.terms
     }, null, 2);
-    const json = await this.callJsonModel(batch_explanation_default, userPrompt, 5e3, batchExplanationSchema);
+    const json = await this.callJsonModel(buildBatchExplanationPrompt(this.explanationLength), userPrompt, 5e3, batchExplanationSchema);
     return readTermsArray(json, "Batch explanation response");
   }
   async explainTermFallback(request) {
@@ -98555,38 +98756,51 @@ var BaseProvider = class {
       sourcePaper: request.sourcePaper,
       term: request.terms[0]
     }, null, 2);
-    const json = await this.callJsonModel(fallback_explanation_default, userPrompt, 1800, fallbackExplanationSchema);
+    const json = await this.callJsonModel(buildFallbackExplanationPrompt(this.explanationLength), userPrompt, 1800, fallbackExplanationSchema);
     if (!json || !json.term || !json.definition) {
       throw new Error("Fallback explanation response did not include a term definition.");
     }
     return json;
   }
+  async selectKeySentences(request) {
+    const userPrompt = JSON.stringify({
+      paperTitle: request.paperTitle,
+      sourcePaper: request.sourcePaper,
+      density: request.density,
+      paragraphs: request.paragraphs
+    }, null, 2);
+    const json = await this.callJsonModel(key_sentence_selection_default, userPrompt, 2600, keySentenceSelectionSchema);
+    return readArrayField(json, "paragraphs", "Key sentence selection response");
+  }
 };
-function readTermsArray(json, context) {
+function readArrayField(json, fieldName, context) {
   if (Array.isArray(json)) {
     return json;
   }
   if (!json || typeof json !== "object") {
-    throw new Error(`${context} did not include a terms array.`);
+    throw new Error(`${context} did not include a ${fieldName} array.`);
   }
-  const terms = json.terms;
-  if (Array.isArray(terms)) {
-    return terms;
+  const value = json[fieldName];
+  if (Array.isArray(value)) {
+    return value;
   }
-  if (typeof terms === "string" && terms.trim()) {
-    const parsed = (0, import_core.parseLooseJsonFromText)(terms);
+  if (typeof value === "string" && value.trim()) {
+    const parsed = (0, import_core.parseLooseJsonFromText)(value);
     if (Array.isArray(parsed)) {
       return parsed;
     }
-    if (parsed && typeof parsed === "object" && Array.isArray(parsed.terms)) {
-      return parsed.terms;
+    if (parsed && typeof parsed === "object" && Array.isArray(parsed[fieldName])) {
+      return parsed[fieldName];
     }
   }
-  throw new Error(`${context} did not include a terms array.`);
+  throw new Error(`${context} did not include a ${fieldName} array.`);
+}
+function readTermsArray(json, context) {
+  return readArrayField(json, "terms", context);
 }
 var OpenAIProvider = class extends BaseProvider {
-  constructor(apiKey, model) {
-    super();
+  constructor(apiKey, model, explanationLength) {
+    super(explanationLength);
     this.name = "openai";
     this.apiKey = apiKey;
     this.model = model;
@@ -98617,8 +98831,8 @@ var OpenAIProvider = class extends BaseProvider {
   }
 };
 var AnthropicProvider = class extends BaseProvider {
-  constructor(apiKey, model) {
-    super();
+  constructor(apiKey, model, explanationLength) {
+    super(explanationLength);
     this.name = "anthropic";
     this.apiKey = apiKey;
     this.model = model;
@@ -98743,6 +98957,30 @@ function extractAnthropicToolInput(json) {
 function isEmptyObject(value) {
   return !!value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 0;
 }
+var explanationPromptVariants = {
+  standard: {
+    definitionRequirement: "Write a paper-level definition of about 80-120 words.",
+    authorUsageRequirement: "Explain how the author appears to use the term in this paper.",
+    firstUseRequirement: "If a first definition or first important use is visible in the supplied excerpts, identify it briefly.",
+    clusterRequirement: "Write one short usage note for each supplied context cluster. The usage note should explain what the term is doing in that passage or section."
+  },
+  brief: {
+    definitionRequirement: "Write a brief definition of about 18-32 words that only explains the term's meaning in this paper.",
+    authorUsageRequirement: "Keep authorUsage empty unless the paper uses the term in a clearly unusual or contrastive way that is necessary to understand the meaning.",
+    firstUseRequirement: "Keep firstUse empty unless the supplied context shows an explicit first definition that is necessary to understand the term.",
+    clusterRequirement: "For each supplied context cluster, leave usageNote empty unless that passage materially changes the meaning; if needed, keep it to one very short sentence."
+  }
+};
+function buildBatchExplanationPrompt(explanationLength) {
+  return renderExplanationPrompt(batch_explanation_default, explanationLength);
+}
+function buildFallbackExplanationPrompt(explanationLength) {
+  return renderExplanationPrompt(fallback_explanation_default, explanationLength);
+}
+function renderExplanationPrompt(template, explanationLength) {
+  const variant = explanationPromptVariants[explanationLength] || explanationPromptVariants.standard;
+  return template.replace("{{DEFINITION_REQUIREMENT}}", variant.definitionRequirement).replace("{{AUTHOR_USAGE_REQUIREMENT}}", variant.authorUsageRequirement).replace("{{FIRST_USE_REQUIREMENT}}", variant.firstUseRequirement).replace("{{CLUSTER_REQUIREMENT}}", variant.clusterRequirement);
+}
 var termDiscoverySchema = {
   type: "object",
   additionalProperties: false,
@@ -98787,6 +99025,26 @@ var explainedTermSchema = {
   },
   required: ["term", "aliases", "definition", "authorUsage", "firstUse", "clusters"]
 };
+var selectedKeySentenceSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    paragraphId: { type: "string" },
+    sentenceId: { type: "string" }
+  },
+  required: ["paragraphId", "sentenceId"]
+};
+var keySentenceSelectionSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    paragraphs: {
+      type: "array",
+      items: selectedKeySentenceSchema
+    }
+  },
+  required: ["paragraphs"]
+};
 var batchExplanationSchema = {
   type: "object",
   additionalProperties: false,
@@ -98801,14 +99059,15 @@ var batchExplanationSchema = {
 var fallbackExplanationSchema = explainedTermSchema;
 function createLLMProvider(settings) {
   if (settings.provider === "anthropic") {
-    return new AnthropicProvider(settings.anthropicApiKey, settings.anthropicModel);
+    return new AnthropicProvider(settings.anthropicApiKey, settings.anthropicModel, settings.glossaryExplanationLength);
   }
-  return new OpenAIProvider(settings.openaiApiKey, settings.openaiModel);
+  return new OpenAIProvider(settings.openaiApiKey, settings.openaiModel, settings.glossaryExplanationLength);
 }
 
 // src/main.ts
 var execFileAsync = (0, import_util.promisify)(import_child_process.execFile);
 var EXPLANATION_BATCH_SIZE = 2;
+var KEY_SENTENCE_BATCH_SIZE = 6;
 var MAX_EXPLANATION_OCCURRENCES = 5;
 var EXPLANATION_EXCERPT_RADIUS = 350;
 var MAX_EXPLANATION_CLUSTERS = 3;
@@ -98818,14 +99077,17 @@ var DEFAULT_SETTINGS = {
   anthropicApiKey: "",
   openaiModel: "gpt-5.4-mini",
   anthropicModel: "claude-sonnet-4-6",
-  pdfImportBackend: "markitdown",
-  markitdownCommand: "markitdown",
+  pdfImportBackend: "scholar-md",
+  scholarMdCommand: "scholar-md",
   markerCommand: "marker_single",
   maxPrecomputedTerms: 40,
   glossaryFolderName: "_glossary",
+  glossaryExplanationLength: "standard",
   hoverDelayMs: 350,
   windowSize: 4,
-  windowOverlap: 1
+  windowOverlap: 1,
+  autoHighlightKeySentences: true,
+  keySentenceDensity: "medium"
 };
 var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
   constructor() {
@@ -98841,6 +99103,7 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
     this.setStatus("");
     this.addSettingTab(new PhilosophyReaderSettingTab(this.app, this));
     this.registerEditorExtension(this.buildHoverExtension());
+    this.registerContextMenuActions();
     this.addCommand({
       id: "import-pdf-as-philosophy-paper",
       name: "Import PDF as Philosophy Paper",
@@ -98851,7 +99114,22 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
           return canRun;
         }
         if (canRun) {
-          void this.importPdfAsPaper(file);
+          void this.importPdfAsPaper(file, { precomputeGlossary: true });
+        }
+        return canRun;
+      }
+    });
+    this.addCommand({
+      id: "convert-current-pdf-to-markdown",
+      name: "Convert Current PDF to Markdown",
+      checkCallback: (checking) => {
+        const file = this.app.workspace.getActiveFile();
+        const canRun = file instanceof import_obsidian2.TFile && file.extension.toLowerCase() === "pdf";
+        if (checking) {
+          return canRun;
+        }
+        if (canRun) {
+          void this.importPdfAsPaper(file, { precomputeGlossary: false });
         }
         return canRun;
       }
@@ -98867,6 +99145,36 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
         }
         if (canRun) {
           void this.rebuildGlossary(file, { background: false });
+        }
+        return canRun;
+      }
+    });
+    this.addCommand({
+      id: "extract-terms-and-explain-current-markdown",
+      name: "Extract Terms and Explain from Current Markdown",
+      checkCallback: (checking) => {
+        const file = this.app.workspace.getActiveFile();
+        const canRun = file instanceof import_obsidian2.TFile && file.extension.toLowerCase() === "md";
+        if (checking) {
+          return canRun;
+        }
+        if (canRun) {
+          void this.extractTermsAndExplain(file);
+        }
+        return canRun;
+      }
+    });
+    this.addCommand({
+      id: "highlight-key-sentences-for-current-paper",
+      name: "Highlight Key Sentences for Current Paper",
+      checkCallback: (checking) => {
+        const file = this.app.workspace.getActiveFile();
+        const canRun = file instanceof import_obsidian2.TFile && file.extension.toLowerCase() === "md";
+        if (checking) {
+          return canRun;
+        }
+        if (canRun) {
+          void this.highlightKeySentences(file, { background: false });
         }
         return canRun;
       }
@@ -98903,9 +99211,23 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
     const pluginPath = this.getPluginDiskPath();
     return pluginPath ? path.join(pluginPath, ".venv", "bin", "marker_single") : null;
   }
-  getLocalMarkitdownCommand() {
+  getLocalScholarMdCommand() {
     const pluginPath = this.getPluginDiskPath();
-    return pluginPath ? path.join(pluginPath, ".eval-venv", "bin", "markitdown") : null;
+    return pluginPath ? path.join(pluginPath, ".venv", "bin", "scholar-md") : null;
+  }
+  resolveScholarMdCommand() {
+    const configured = this.settings.scholarMdCommand.trim();
+    if (configured && configured !== DEFAULT_SETTINGS.scholarMdCommand) {
+      return { command: configured, source: "settings" };
+    }
+    const localScholarMd = this.getLocalScholarMdCommand();
+    if (localScholarMd && fs.existsSync(localScholarMd)) {
+      return { command: localScholarMd, source: "local" };
+    }
+    if (configured) {
+      return { command: configured, source: "path" };
+    }
+    return null;
   }
   getPluginDiskPath() {
     const adapter = this.app.vault.adapter;
@@ -98923,9 +99245,18 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
       this.settings.markerCommand = DEFAULT_SETTINGS.markerCommand;
       void this.saveSettings();
     }
-    const localMarkitdown = this.getLocalMarkitdownCommand();
-    if (this.settings.markitdownCommand === DEFAULT_SETTINGS.markitdownCommand && localMarkitdown && fs.existsSync(localMarkitdown)) {
-      this.settings.markitdownCommand = localMarkitdown;
+    if (this.settings.pdfImportBackend === "markitdown") {
+      this.settings.pdfImportBackend = "scholar-md";
+      void this.saveSettings();
+    }
+    const raw = this.settings;
+    if (raw.markitdownCommand !== void 0) {
+      delete raw.markitdownCommand;
+      void this.saveSettings();
+    }
+    const localScholarMd = this.getLocalScholarMdCommand();
+    if (this.settings.scholarMdCommand === DEFAULT_SETTINGS.scholarMdCommand && localScholarMd && fs.existsSync(localScholarMd)) {
+      this.settings.scholarMdCommand = localScholarMd;
       void this.saveSettings();
     }
   }
@@ -98934,6 +99265,27 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
       async (view, pos) => this.resolveHoverTooltip(view, pos),
       { hoverTime: this.settings.hoverDelayMs }
     );
+  }
+  registerContextMenuActions() {
+    this.registerEvent(this.app.workspace.on("file-menu", (menu, abstractFile) => {
+      if (!(abstractFile instanceof import_obsidian2.TFile)) {
+        return;
+      }
+      const extension = abstractFile.extension.toLowerCase();
+      if (extension === "pdf") {
+        menu.addItem((item) => item.setTitle("Convert PDF to Markdown").setIcon("file-text").onClick(() => {
+          void this.importPdfAsPaper(abstractFile, { precomputeGlossary: false });
+        }));
+      }
+      if (extension === "md") {
+        menu.addItem((item) => item.setTitle("Highlight Key Sentences").setIcon("highlighter").onClick(() => {
+          void this.highlightKeySentences(abstractFile, { background: false });
+        }));
+        menu.addItem((item) => item.setTitle("Extract Terms and Explain").setIcon("brain").onClick(() => {
+          void this.extractTermsAndExplain(abstractFile);
+        }));
+      }
+    }));
   }
   async resolveHoverTooltip(view, pos) {
     const file = this.app.workspace.getActiveFile();
@@ -99023,14 +99375,16 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
     root.appendChild(button);
     return root;
   }
-  async importPdfAsPaper(file) {
+  async importPdfAsPaper(file, options = {}) {
     try {
+      const precomputeGlossary = options.precomputeGlossary !== false;
       if (this.settings.pdfImportBackend === "marker" && !this.settings.markerCommand.trim()) {
         new import_obsidian2.Notice("Set the Marker CLI path in Philosophy Reader settings first.");
         return;
       }
-      if (this.settings.pdfImportBackend === "markitdown" && !this.settings.markitdownCommand.trim()) {
-        new import_obsidian2.Notice("Set the MarkItDown CLI path in Philosophy Reader settings first.");
+      const scholarMdCommand = this.resolveScholarMdCommand();
+      if (this.settings.pdfImportBackend === "scholar-md" && !scholarMdCommand) {
+        new import_obsidian2.Notice("Scholar-MD was not found. Run tools/scholar-md/bootstrap.sh or set the CLI path in settings.");
         return;
       }
       const adapter = this.app.vault.adapter;
@@ -99062,7 +99416,7 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
       await this.ensureFolder(joinVaultPath(paperFolder, this.settings.glossaryFolderName));
       await this.ensureFolder(joinVaultPath(paperFolder, "_source"));
       const pdfAbsPath = adapter.getFullPath(pdfTarget);
-      const importedMarkdown = this.settings.pdfImportBackend === "marker" ? await this.convertPdfWithMarker(pdfAbsPath, paperFolder, adapter) : this.settings.pdfImportBackend === "markitdown" ? await this.convertPdfWithMarkitdown(pdfAbsPath, paperFolder, baseName, pdfTarget, adapter) : await this.convertDigitalPdfWithPdfJs(pdfAbsPath, paperFolder, baseName, pdfTarget);
+      const importedMarkdown = this.settings.pdfImportBackend === "marker" ? await this.convertPdfWithMarker(pdfAbsPath, paperFolder, adapter) : this.settings.pdfImportBackend === "scholar-md" ? await this.convertPdfWithScholarMd(pdfAbsPath, paperFolder, baseName, pdfTarget, adapter, scholarMdCommand) : await this.convertDigitalPdfWithPdfJs(pdfAbsPath, paperFolder, baseName, pdfTarget);
       const paperMarkdown = buildImportedPaperMarkdown(importedMarkdown, {
         title: baseName,
         sourcePdf: pdfTarget,
@@ -99073,8 +99427,17 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
       const markdownFile = this.app.vault.getAbstractFileByPath(mdTarget);
       if (markdownFile instanceof import_obsidian2.TFile) {
         await this.app.workspace.getLeaf(false).openFile(markdownFile);
-        new import_obsidian2.Notice("PDF imported. Glossary preprocessing is running in the background. Check _glossary/_status.md for progress.");
-        void this.rebuildGlossary(markdownFile, { background: true });
+        if (precomputeGlossary) {
+          if (this.settings.autoHighlightKeySentences) {
+            new import_obsidian2.Notice("PDF imported. Key sentence highlighting and glossary preprocessing are running in the background.");
+            void this.preparePaperForReading(markdownFile, { background: true });
+          } else {
+            new import_obsidian2.Notice("PDF imported. Glossary preprocessing is running in the background. Check _glossary/_status.md for progress.");
+            void this.rebuildGlossary(markdownFile, { background: true });
+          }
+        } else {
+          new import_obsidian2.Notice("PDF converted to Markdown. Run 'Extract Terms and Explain from Current Markdown' when you are ready.");
+        }
       }
     } catch (error) {
       new import_obsidian2.Notice(`PDF import failed: ${toErrorMessage(error)}`);
@@ -99101,46 +99464,56 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
     );
     return buildMarkdownFromExtractedPdfText(extracted, paperTitle);
   }
-  async convertPdfWithMarkitdown(pdfAbsPath, paperFolder, paperTitle, sourcePdfPath, adapter) {
-    this.setStatus("Philosophy Reader: converting PDF with MarkItDown...");
-    new import_obsidian2.Notice("Converting PDF with MarkItDown...");
-    const outputDir = path.join(adapter.getFullPath(paperFolder), ".markitdown-output");
+  async convertPdfWithScholarMd(pdfAbsPath, paperFolder, paperTitle, sourcePdfPath, adapter, resolvedCommand) {
+    this.setStatus("Philosophy Reader: converting PDF with Scholar-MD...");
+    const commandLabel = resolvedCommand.source === "local" ? "local Scholar-MD" : "Scholar-MD";
+    new import_obsidian2.Notice(`Converting PDF with ${commandLabel}...`);
+    const outputDir = path.join(adapter.getFullPath(paperFolder), ".scholar-md-output");
     if (fs.existsSync(outputDir)) {
       fs.rmSync(outputDir, { recursive: true, force: true });
     }
     fs.mkdirSync(outputDir, { recursive: true });
-    const outputPath = path.join(outputDir, "markitdown.md");
+    const outputPath = path.join(outputDir, "scholar-md.md");
+    const diagnosticsPath = path.join(outputDir, "scholar-md.diagnostics.json");
     const logPath = path.join(outputDir, "import.log");
-    const markitdownArgs = [
+    const scholarMdArgs = [
       pdfAbsPath,
       "-o",
-      outputPath
+      outputPath,
+      "--emit-diagnostics",
+      "--diagnostics-output",
+      diagnosticsPath
     ];
     try {
-      const result = await execFileAsync(this.settings.markitdownCommand, markitdownArgs, {
+      const result = await execFileAsync(resolvedCommand.command, scholarMdArgs, {
         maxBuffer: 1024 * 1024 * 80
       });
-      fs.writeFileSync(logPath, formatMarkerLog(this.settings.markitdownCommand, markitdownArgs, result.stdout, result.stderr), "utf8");
+      fs.writeFileSync(logPath, formatMarkerLog(resolvedCommand.command, scholarMdArgs, result.stdout, result.stderr), "utf8");
     } catch (error) {
       const execError = error;
-      fs.writeFileSync(logPath, formatMarkerLog(this.settings.markitdownCommand, markitdownArgs, execError.stdout || "", execError.stderr || toErrorMessage(error)), "utf8");
-      throw new Error(`MarkItDown conversion failed. See ${logPath}`);
+      fs.writeFileSync(logPath, formatMarkerLog(resolvedCommand.command, scholarMdArgs, execError.stdout || "", execError.stderr || toErrorMessage(error)), "utf8");
+      throw new Error(`Scholar-MD conversion failed. See ${logPath}`);
     }
     if (!fs.existsSync(outputPath)) {
-      throw new Error("MarkItDown finished without producing a markdown file.");
+      throw new Error("Scholar-MD finished without producing a markdown file.");
     }
     const importedMarkdown = fs.readFileSync(outputPath, "utf8").trim();
     if (importedMarkdown.replace(/\s/g, "").length < 800) {
-      throw new Error("MarkItDown found very little selectable text. This PDF may need OCR.");
+      throw new Error("Scholar-MD found very little selectable text. This PDF may need OCR.");
     }
     const quality = (0, import_core2.analyzeMarkdownQuality)(importedMarkdown);
-    await this.writeVaultTextFile(joinVaultPath(paperFolder, "_source", "markitdown.md"), `${importedMarkdown}
+    await this.writeVaultTextFile(joinVaultPath(paperFolder, "_source", "scholar-md.md"), `${importedMarkdown}
 `);
+    if (fs.existsSync(diagnosticsPath)) {
+      const diagnostics = fs.readFileSync(diagnosticsPath, "utf8");
+      await this.writeVaultTextFile(joinVaultPath(paperFolder, "_source", "scholar-md.diagnostics.json"), diagnostics);
+    }
     await this.writeVaultTextFile(
       joinVaultPath(paperFolder, "_source", "import-quality.json"),
       `${JSON.stringify({
-        backend: "markitdown",
-        command: this.settings.markitdownCommand,
+        backend: "scholar-md",
+        command: resolvedCommand.command,
+        commandSource: resolvedCommand.source,
         paperTitle,
         sourcePdf: sourcePdfPath,
         importedAt: (/* @__PURE__ */ new Date()).toISOString(),
@@ -99150,7 +99523,7 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
     );
     await this.writeVaultTextFile(
       joinVaultPath(paperFolder, "_source", "import-warnings.md"),
-      buildImportWarningsMarkdown("MarkItDown", sourcePdfPath, quality)
+      buildImportWarningsMarkdown("Scholar-MD", sourcePdfPath, quality)
     );
     fs.rmSync(outputDir, { recursive: true, force: true });
     if (quality.riskLevel === "high" || quality.riskLevel === "medium") {
@@ -99195,6 +99568,90 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
     const importedMarkdown = fs.readFileSync(markerMarkdown, "utf8");
     fs.rmSync(outputDir, { recursive: true, force: true });
     return importedMarkdown;
+  }
+  async preparePaperForReading(file, options = {}) {
+    if (this.settings.autoHighlightKeySentences) {
+      await this.highlightKeySentences(file, {
+        background: options.background,
+        silentSuccess: true
+      });
+    }
+    await this.rebuildGlossary(file, { background: options.background });
+  }
+  async highlightKeySentences(file, options = {}) {
+    try {
+      const provider = createLLMProvider(this.settings);
+      const originalMarkdown = await this.app.vault.read(file);
+      const existingSidecar = await this.loadKeySentenceSidecar(file);
+      const cleanedMarkdown = (0, import_core2.removeManagedSentenceHighlights)(originalMarkdown, existingSidecar.highlights);
+      const paragraphs = (0, import_core2.splitParagraphs)(cleanedMarkdown);
+      const candidates = (0, import_core2.buildKeySentenceParagraphs)(cleanedMarkdown, paragraphs);
+      if (candidates.length === 0) {
+        if (cleanedMarkdown !== originalMarkdown) {
+          await this.writeVaultTextFile(file.path, cleanedMarkdown);
+        }
+        await this.writeKeySentenceSidecar(file, this.buildKeySentenceSidecar(file, provider.name, provider.model, this.settings.keySentenceDensity, []));
+        if (!options.silentSuccess) {
+          new import_obsidian2.Notice("No multi-sentence prose paragraphs were eligible for key-sentence highlighting.");
+        }
+        return true;
+      }
+      const selectedByParagraph = /* @__PURE__ */ new Map();
+      let processed = 0;
+      for (const batch of chunk(candidates, KEY_SENTENCE_BATCH_SIZE)) {
+        const rangeStart = processed + 1;
+        const rangeEnd = processed + batch.length;
+        processed += batch.length;
+        this.setStatus(`Philosophy Reader: selecting key sentences ${rangeStart}-${rangeEnd}/${candidates.length}`);
+        const selections = await provider.selectKeySentences({
+          paperTitle: (0, import_core2.getBaseName)(file.path),
+          sourcePaper: file.path,
+          density: this.settings.keySentenceDensity,
+          paragraphs: batch.map((paragraph) => this.toKeySentenceParagraphInput(paragraph))
+        });
+        for (const selection of selections) {
+          if (selectedByParagraph.has(selection.paragraphId)) {
+            continue;
+          }
+          const sentence = findSelectedKeySentence(batch, selection.paragraphId, selection.sentenceId);
+          if (sentence) {
+            selectedByParagraph.set(selection.paragraphId, sentence);
+          }
+        }
+      }
+      const highlights = Array.from(selectedByParagraph.values());
+      const highlightedMarkdown = (0, import_core2.applySentenceHighlights)(cleanedMarkdown, highlights);
+      if (highlightedMarkdown !== originalMarkdown) {
+        await this.writeVaultTextFile(file.path, highlightedMarkdown);
+      }
+      await this.writeKeySentenceSidecar(file, this.buildKeySentenceSidecar(file, provider.name, provider.model, this.settings.keySentenceDensity, highlights));
+      if (!options.silentSuccess) {
+        if (highlights.length === 0) {
+          new import_obsidian2.Notice("No key sentences were selected for highlighting.");
+        } else {
+          new import_obsidian2.Notice(`Highlighted key sentences: ${highlights.length} paragraph${highlights.length === 1 ? "" : "s"}.`);
+        }
+      }
+      return true;
+    } catch (error) {
+      new import_obsidian2.Notice(`Key sentence highlighting failed: ${toErrorMessage(error)}`);
+      console.error(error);
+      return false;
+    } finally {
+      this.setStatus("");
+    }
+  }
+  toKeySentenceParagraphInput(paragraph) {
+    return {
+      paragraphId: paragraph.id,
+      paragraphIndex: paragraph.paragraphIndex,
+      heading: paragraph.heading,
+      text: paragraph.text,
+      sentences: paragraph.sentences.map((sentence) => ({
+        id: sentence.id,
+        text: sentence.text
+      }))
+    };
   }
   async rebuildGlossary(file, options) {
     try {
@@ -99285,6 +99742,9 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
     } finally {
       this.setStatus("");
     }
+  }
+  async extractTermsAndExplain(file) {
+    await this.rebuildGlossary(file, { background: false });
   }
   buildExplainTermInput(markdown, paragraphs, term) {
     const aliases = Array.isArray(term.aliases) ? term.aliases : [];
@@ -99378,6 +99838,73 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
     ].join("\n");
     await this.writeVaultTextFile(joinVaultPath(folderPath, "_status.md"), markdown);
   }
+  buildKeySentenceSidecar(file, provider, model, density, highlights) {
+    return {
+      version: 1,
+      paper: file.path,
+      provider,
+      model,
+      density,
+      updated: (/* @__PURE__ */ new Date()).toISOString(),
+      highlights: highlights.map((sentence) => ({
+        paragraphId: sentence.paragraphId,
+        paragraphIndex: sentence.paragraphIndex,
+        sentenceId: sentence.id,
+        text: sentence.text
+      }))
+    };
+  }
+  async loadKeySentenceSidecar(file) {
+    const sidecarPath = this.keySentenceSidecarPath(file);
+    const existing = this.app.vault.getAbstractFileByPath(sidecarPath);
+    if (!(existing instanceof import_obsidian2.TFile)) {
+      return {
+        version: 1,
+        paper: file.path,
+        provider: "",
+        model: "",
+        density: "medium",
+        updated: "",
+        highlights: []
+      };
+    }
+    try {
+      const parsed = JSON.parse(await this.app.vault.read(existing));
+      return {
+        version: Number(parsed.version) || 1,
+        paper: typeof parsed.paper === "string" ? parsed.paper : file.path,
+        provider: typeof parsed.provider === "string" ? parsed.provider : "",
+        model: typeof parsed.model === "string" ? parsed.model : "",
+        density: parsed.density === "sparse" ? "sparse" : "medium",
+        updated: typeof parsed.updated === "string" ? parsed.updated : "",
+        highlights: Array.isArray(parsed.highlights) ? parsed.highlights.filter((item) => !!item && typeof item === "object").map((item) => ({
+          paragraphId: typeof item.paragraphId === "string" ? item.paragraphId : "",
+          paragraphIndex: Number(item.paragraphIndex),
+          sentenceId: typeof item.sentenceId === "string" ? item.sentenceId : "",
+          text: typeof item.text === "string" ? item.text : ""
+        })).filter((item) => item.paragraphId && item.sentenceId && Number.isFinite(item.paragraphIndex) && item.text) : []
+      };
+    } catch (error) {
+      console.error(error);
+      return {
+        version: 1,
+        paper: file.path,
+        provider: "",
+        model: "",
+        density: "medium",
+        updated: "",
+        highlights: []
+      };
+    }
+  }
+  async writeKeySentenceSidecar(file, sidecar) {
+    await this.ensureFolder(this.sourceFolderPath(file));
+    await this.writeVaultTextFile(
+      this.keySentenceSidecarPath(file),
+      `${JSON.stringify(sidecar, null, 2)}
+`
+    );
+  }
   async writeVaultTextFile(vaultPath, text) {
     const existing = this.app.vault.getAbstractFileByPath(vaultPath);
     if (existing instanceof import_obsidian2.TFile) {
@@ -99417,6 +99944,12 @@ var PhilosophyReaderPlugin = class extends import_obsidian2.Plugin {
   }
   glossaryFolderPath(file) {
     return joinVaultPath((0, import_core2.getParentPath)(file.path), this.settings.glossaryFolderName);
+  }
+  sourceFolderPath(file) {
+    return joinVaultPath((0, import_core2.getParentPath)(file.path), "_source");
+  }
+  keySentenceSidecarPath(file) {
+    return joinVaultPath(this.sourceFolderPath(file), "key-sentences.json");
   }
   async uniqueFolderPath(basePath) {
     let candidate = basePath;
@@ -99472,24 +100005,24 @@ var PhilosophyReaderSettingTab = class extends import_obsidian2.PluginSettingTab
     containerEl.empty();
     containerEl.createEl("h2", { text: "Philosophy Reader" });
     containerEl.createEl("h3", { text: "PDF import" });
-    new import_obsidian2.Setting(containerEl).setName("PDF import backend").setDesc("MarkItDown is the default digital-PDF path. PDF.js is a lightweight fallback; Marker is optional.").addDropdown((dropdown) => dropdown.addOption("markitdown", "MarkItDown CLI").addOption("pdfjs", "PDF.js text extraction").addOption("marker", "Marker CLI").setValue(this.plugin.settings.pdfImportBackend).onChange(async (value) => {
-      const backend = value === "marker" ? "marker" : value === "pdfjs" ? "pdfjs" : "markitdown";
+    new import_obsidian2.Setting(containerEl).setName("PDF import backend").setDesc("Scholar-MD is the default digital-PDF path. PDF.js is a lightweight fallback; Marker is optional for scanned PDFs.").addDropdown((dropdown) => dropdown.addOption("scholar-md", "Scholar-MD").addOption("pdfjs", "PDF.js text extraction").addOption("marker", "Marker CLI").setValue(this.plugin.settings.pdfImportBackend).onChange(async (value) => {
+      const backend = value === "marker" ? "marker" : value === "pdfjs" ? "pdfjs" : "scholar-md";
       this.plugin.settings.pdfImportBackend = backend;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian2.Setting(containerEl).setName("MarkItDown CLI path").setDesc("Used when the backend is MarkItDown CLI. Outputs quality warnings under _source/.").addText((text) => text.setPlaceholder("markitdown").setValue(this.plugin.settings.markitdownCommand).onChange(async (value) => {
-      this.plugin.settings.markitdownCommand = value.trim();
+    new import_obsidian2.Setting(containerEl).setName("Scholar-MD CLI path").setDesc("Resolution order: explicit setting, plugin .venv local tool, then shell PATH. If no local tool exists, run tools/scholar-md/bootstrap.sh.").addText((text) => text.setPlaceholder("scholar-md").setValue(this.plugin.settings.scholarMdCommand).onChange(async (value) => {
+      this.plugin.settings.scholarMdCommand = value.trim();
       await this.plugin.saveSettings();
-    })).addButton((button) => button.setButtonText("Use local MarkItDown").onClick(async () => {
-      const localCommand = this.plugin.getLocalMarkitdownCommand();
+    })).addButton((button) => button.setButtonText("Use local Scholar-MD").onClick(async () => {
+      const localCommand = this.plugin.getLocalScholarMdCommand();
       if (!localCommand || !fs.existsSync(localCommand)) {
-        new import_obsidian2.Notice("Local markitdown was not found in this plugin's .eval-venv.");
+        new import_obsidian2.Notice("Local scholar-md was not found in this plugin's .venv.");
         return;
       }
-      this.plugin.settings.markitdownCommand = localCommand;
+      this.plugin.settings.scholarMdCommand = localCommand;
       await this.plugin.saveSettings();
       this.display();
-      new import_obsidian2.Notice("MarkItDown CLI path set to local markitdown.");
+      new import_obsidian2.Notice("Scholar-MD CLI path set to local scholar-md.");
     }));
     new import_obsidian2.Setting(containerEl).setName("Marker CLI path").setDesc("Optional. Only used when the backend is Marker CLI.").addText((text) => text.setPlaceholder("marker_single").setValue(this.plugin.settings.markerCommand).onChange(async (value) => {
       this.plugin.settings.markerCommand = value.trim();
@@ -99532,6 +100065,15 @@ var PhilosophyReaderSettingTab = class extends import_obsidian2.PluginSettingTab
       this.plugin.settings.anthropicModel = value.trim() || DEFAULT_SETTINGS.anthropicModel;
       await this.plugin.saveSettings();
     }));
+    containerEl.createEl("h3", { text: "Reading prep" });
+    new import_obsidian2.Setting(containerEl).setName("Auto highlight key sentences after import").setDesc("When enabled, import runs key-sentence highlighting before glossary preprocessing.").addToggle((toggle) => toggle.setValue(this.plugin.settings.autoHighlightKeySentences).onChange(async (value) => {
+      this.plugin.settings.autoHighlightKeySentences = value;
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian2.Setting(containerEl).setName("Key sentence density").setDesc("Medium matches the current behavior. Sparse highlights only structurally important sentences.").addDropdown((dropdown) => dropdown.addOption("medium", "Medium").addOption("sparse", "Sparse").setValue(this.plugin.settings.keySentenceDensity).onChange(async (value) => {
+      this.plugin.settings.keySentenceDensity = value === "sparse" ? "sparse" : "medium";
+      await this.plugin.saveSettings();
+    }));
     containerEl.createEl("h3", { text: "Glossary" });
     new import_obsidian2.Setting(containerEl).setName("Max precomputed terms").setDesc("MVP default is 40. Higher values cost more and take longer.").addSlider((slider) => slider.setLimits(10, 120, 5).setDynamicTooltip().setValue(this.plugin.settings.maxPrecomputedTerms).onChange(async (value) => {
       this.plugin.settings.maxPrecomputedTerms = value;
@@ -99539,6 +100081,10 @@ var PhilosophyReaderSettingTab = class extends import_obsidian2.PluginSettingTab
     }));
     new import_obsidian2.Setting(containerEl).setName("Glossary folder name").addText((text) => text.setValue(this.plugin.settings.glossaryFolderName).onChange(async (value) => {
       this.plugin.settings.glossaryFolderName = value.trim() || DEFAULT_SETTINGS.glossaryFolderName;
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian2.Setting(containerEl).setName("Glossary explanation length").setDesc("Controls newly generated glossary entries. Standard keeps the current contextual explanation; Brief stores a short meaning-only explanation. Rebuild glossary entries to refresh existing cache.").addDropdown((dropdown) => dropdown.addOption("standard", "Standard (current)").addOption("brief", "Brief meaning only").setValue(this.plugin.settings.glossaryExplanationLength).onChange(async (value) => {
+      this.plugin.settings.glossaryExplanationLength = value === "brief" ? "brief" : "standard";
       await this.plugin.saveSettings();
     }));
     new import_obsidian2.Setting(containerEl).setName("Hover delay").setDesc("Milliseconds before the hover tooltip appears. Reload Obsidian after changing this.").addSlider((slider) => slider.setLimits(100, 1e3, 50).setDynamicTooltip().setValue(this.plugin.settings.hoverDelayMs).onChange(async (value) => {
@@ -99753,6 +100299,15 @@ function chunk(items, size) {
     chunks.push(items.slice(index, index + size));
   }
   return chunks;
+}
+function findSelectedKeySentence(paragraphs, paragraphId, sentenceId) {
+  for (const paragraph of paragraphs) {
+    if (paragraph.id !== paragraphId) {
+      continue;
+    }
+    return paragraph.sentences.find((sentence) => sentence.id === sentenceId) || null;
+  }
+  return null;
 }
 function findMatchingInput(inputs, explanation) {
   const normalized = (0, import_core2.normalizeTerm)(explanation.term);

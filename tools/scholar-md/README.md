@@ -9,12 +9,41 @@ structure: reading order, paragraph boundaries, headings, footnotes, inline and
 display formulas, special characters, header/footer removal, and multi-column
 ordering.
 
+## Project Boundary
+
+`tools/scholar-md/` is maintained as a standalone Python CLI project inside the
+Philosophy Reader repo. Obsidian calls the CLI; the plugin bundle does not
+embed PDF parsing logic.
+
+The expected local install target is the plugin repo venv:
+
+`/Users/sharuixuan/Documents/Obsidian_Vault/.obsidian/plugins/phil_reader.nosync/.venv/bin/scholar-md`
+
 ## Install
+
+Preferred bootstrap from the plugin repo root:
+
+```sh
+tools/scholar-md/bootstrap.sh
+```
+
+That creates `./.venv`, installs the locked runtime dependency from
+`tools/scholar-md/requirements.txt`, and installs `scholar-md` in editable
+mode.
+
+Manual install from inside `tools/scholar-md/`:
 
 ```sh
 python3 -m venv .venv
 . .venv/bin/activate
+pip install -r requirements.txt
 pip install -e .
+```
+
+Developer extras currently reuse the same lightweight runtime lock:
+
+```sh
+pip install -r requirements-dev.txt
 ```
 
 ## Run
@@ -63,3 +92,28 @@ scholar-md input.pdf \
 With `--emit-diagnostics`, the converter writes a sidecar JSON file containing
 page-level layout facts, removed headers/footers, detected formulas and
 footnotes, low-confidence warnings, and source bounding boxes where available.
+
+## Philosophy Reader Contract
+
+Philosophy Reader calls `scholar-md` with:
+
+```sh
+scholar-md input.pdf \
+  -o output.md \
+  --emit-diagnostics \
+  --diagnostics-output output.diagnostics.json
+```
+
+Contract expectations:
+
+- non-zero exit status means conversion failed
+- success must produce the markdown output file
+- when diagnostics are requested, success should also produce the diagnostics
+  JSON file
+- the plugin then copies those outputs into the paper folder under `_source/`
+
+## Environment Size
+
+For the current MVP, the default install stays small because it only depends on
+`PyMuPDF`. OCR, MinerU, model downloads, and other heavyweight pipelines are
+explicitly out of the default `scholar-md` environment.

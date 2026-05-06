@@ -1,6 +1,10 @@
 "use strict";
 
 const WORD_BOUNDARY_RE = /[A-Za-z0-9_-]/;
+const SENTENCE_SEGMENTER = typeof Intl !== "undefined" && typeof Intl.Segmenter === "function"
+  ? new Intl.Segmenter("en", { granularity: "sentence" })
+  : null;
+const MIN_KEY_SENTENCE_PARAGRAPH_CHARS = 80;
 
 function stripFrontmatter(markdown) {
   if (!markdown.startsWith("---\n")) {
@@ -99,6 +103,7 @@ function splitParagraphs(markdown) {
       index,
       start,
       end,
+      raw: raw,
       text,
       heading: currentHeading
     });
@@ -134,6 +139,142 @@ function buildParagraphWindows(paragraphs, size, overlap) {
   }
 
   return windows;
+}
+
+function paragraphIdForIndex(index) {
+  return `p-${index}`;
+}
+
+function segmentSentences(text) {
+  const raw = String(text || "");
+  if (!raw) {
+    return [];
+  }
+  if (SENTENCE_SEGMENTER && !raw.includes("==")) {
+    return Array.from(SENTENCE_SEGMENTER.segment(raw), (item) => ({
+      index: item.index,
+      segment: item.segment
+    }));
+  }
+
+  const segments = [];
+  let start = 0;
+  for (let index = 0; index < raw.length; index += 1) {
+    if (!/[.!?]/.test(raw[index])) {
+      continue;
+    }
+    let end = index + 1;
+    while (end < raw.length) {
+      if (raw.slice(end, end + 2) === "==") {
+        end += 2;
+        continue;
+      }
+      if (/["')\]]/.test(raw[end])) {
+        end += 1;
+        continue;
+      }
+      break;
+    }
+    if (end < raw.length && !/\s/.test(raw[end])) {
+      continue;
+    }
+    while (end < raw.length && /\s/.test(raw[end])) {
+      end += 1;
+    }
+    segments.push({
+      index: start,
+      segment: raw.slice(start, end)
+    });
+    start = end;
+  }
+  if (start < raw.length) {
+    segments.push({
+      index: start,
+      segment: raw.slice(start)
+    });
+  }
+  return segments;
+}
+
+function normalizeSentenceText(value) {
+  return stripMarkdown(value)
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function splitParagraphSentences(markdown, paragraph) {
+  if (!paragraph || !Number.isFinite(paragraph.start) || !Number.isFinite(paragraph.end)) {
+    return [];
+  }
+
+  const rawParagraph = String(markdown || "").slice(paragraph.start, paragraph.end);
+  const paragraphId = paragraphIdForIndex(paragraph.index);
+  const sentences = [];
+
+  for (const item of segmentSentences(rawParagraph)) {
+    let start = item.index;
+    let end = item.index + item.segment.length;
+
+    while (start < end && /\s/.test(rawParagraph[start])) {
+      start += 1;
+    }
+    while (end > start && /\s/.test(rawParagraph[end - 1])) {
+      end -= 1;
+    }
+    if (end <= start) {
+      continue;
+    }
+
+    const rawText = rawParagraph.slice(start, end);
+    const text = stripMarkdown(rawText)
+      .replace(/\s+/g, " ")
+      .trim();
+    if (text.length < 20) {
+      continue;
+    }
+
+    sentences.push({
+      id: `${paragraphId}-s-${sentences.length + 1}`,
+      paragraphId,
+      paragraphIndex: paragraph.index,
+      startOffset: paragraph.start + start,
+      endOffset: paragraph.start + end,
+      rawText,
+      text
+    });
+  }
+
+  return sentences;
+}
+
+function buildKeySentenceParagraphs(markdown, paragraphs, minParagraphChars) {
+  const safeMinParagraphChars = Math.max(40, Number(minParagraphChars) || MIN_KEY_SENTENCE_PARAGRAPH_CHARS);
+  const candidates = [];
+
+  for (const paragraph of paragraphs || []) {
+    if (!paragraph || String(paragraph.text || "").length < safeMinParagraphChars) {
+      continue;
+    }
+
+    const sentences = splitParagraphSentences(markdown, paragraph)
+      .filter((sentence) => !String(sentence.rawText || "").includes("=="));
+    if (sentences.length < 2) {
+      continue;
+    }
+
+    candidates.push({
+      id: paragraphIdForIndex(paragraph.index),
+      paragraphIndex: paragraph.index,
+      heading: paragraph.heading || "",
+      text: paragraph.text,
+      startOffset: paragraph.start,
+      endOffset: paragraph.end,
+      sentences
+    });
+  }
+
+  return candidates;
 }
 
 function mergeTermCandidates(candidates, maxTerms) {
@@ -312,6 +453,95 @@ function chooseClusterForOffset(entry, offset) {
   return clusters
     .slice()
     .sort((a, b) => Math.abs(a.startOffset - offset) - Math.abs(b.startOffset - offset))[0];
+}
+
+function isWrappedSentenceHighlight(text) {
+  const raw = String(text || "");
+  return raw.startsWith("==") && raw.endsWith("==") && raw.length > 4;
+}
+
+function applySentenceHighlights(markdown, sentences) {
+  let output = String(markdown || "");
+  const seen = new Set();
+  const ordered = (Array.isArray(sentences) ? sentences : [])
+    .filter((sentence) => sentence && Number.isFinite(sentence.startOffset) && Number.isFinite(sentence.endOffset))
+    .filter((sentence) => {
+      const key = `${sentence.startOffset}:${sentence.endOffset}`;
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    })
+    .sort((a, b) => b.startOffset - a.startOffset);
+
+  for (const sentence of ordered) {
+    const snippet = output.slice(sentence.startOffset, sentence.endOffset);
+    if (!snippet) {
+      continue;
+    }
+    if (isWrappedSentenceHighlight(snippet) || snippet.includes("==")) {
+      continue;
+    }
+    output = `${output.slice(0, sentence.startOffset)}==${snippet}==${output.slice(sentence.endOffset)}`;
+  }
+
+  return output;
+}
+
+function removeManagedSentenceHighlights(markdown, records) {
+  const source = String(markdown || "");
+  if (!Array.isArray(records) || records.length === 0) {
+    return source;
+  }
+
+  const byParagraph = new Map();
+  for (const record of records) {
+    const paragraphIndex = Number(record && record.paragraphIndex);
+    const text = normalizeSentenceText(record && record.text);
+    if (!Number.isFinite(paragraphIndex) || !text) {
+      continue;
+    }
+    const existing = byParagraph.get(paragraphIndex) || [];
+    existing.push(text);
+    byParagraph.set(paragraphIndex, existing);
+  }
+
+  const matches = [];
+  for (const paragraph of splitParagraphs(source)) {
+    const targets = byParagraph.get(paragraph.index);
+    if (!targets || targets.length === 0) {
+      continue;
+    }
+
+    const remaining = targets.slice();
+    for (const sentence of splitParagraphSentences(source, paragraph)) {
+      if (!isWrappedSentenceHighlight(sentence.rawText)) {
+        continue;
+      }
+
+      const normalized = normalizeSentenceText(sentence.text);
+      const targetIndex = remaining.indexOf(normalized);
+      if (targetIndex === -1) {
+        continue;
+      }
+      remaining.splice(targetIndex, 1);
+      matches.push(sentence);
+    }
+  }
+
+  let output = source;
+  matches
+    .sort((a, b) => b.startOffset - a.startOffset)
+    .forEach((sentence) => {
+      const snippet = output.slice(sentence.startOffset, sentence.endOffset);
+      if (!isWrappedSentenceHighlight(snippet)) {
+        return;
+      }
+      output = `${output.slice(0, sentence.startOffset)}${snippet.slice(2, -2)}${output.slice(sentence.endOffset)}`;
+    });
+
+  return output;
 }
 
 function jsonCandidateFromText(text) {
@@ -628,8 +858,10 @@ function analyzeMarkdownQuality(markdown) {
 
 module.exports = {
   analyzeMarkdownQuality,
+  applySentenceHighlights,
   buildContextClusters,
   buildGlossaryMarkdown,
+  buildKeySentenceParagraphs,
   buildParagraphWindows,
   chooseClusterForOffset,
   collectEntryTerms,
@@ -644,7 +876,9 @@ module.exports = {
   parseGlossaryMarkdown,
   parseJsonFromText,
   parseLooseJsonFromText,
+  removeManagedSentenceHighlights,
   slugify,
+  splitParagraphSentences,
   splitParagraphs,
   stripFrontmatter,
   stripMarkdown

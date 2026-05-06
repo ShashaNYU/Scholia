@@ -17,8 +17,10 @@ import {
 } from "obsidian";
 import {
   analyzeMarkdownQuality,
+  applySentenceHighlights,
   buildContextClusters,
   buildGlossaryMarkdown,
+  buildKeySentenceParagraphs,
   buildParagraphWindows,
   chooseClusterForOffset,
   excerptAround,
@@ -30,23 +32,29 @@ import {
   mergeTermCandidates,
   normalizeTerm,
   parseGlossaryMarkdown,
+  removeManagedSentenceHighlights,
   slugify,
   splitParagraphs,
   type ContextCluster,
   type GlossaryEntry,
+  type KeySentenceParagraph,
   type MarkdownQualityReport,
+  type SentenceSpan,
   type TermCandidate
 } from "./core.js";
 import {
   createLLMProvider,
   type ExplainTermInput,
   type ExplainedTerm,
+  type KeySentenceParagraphInput,
+  type KeySentenceDensity,
   type PdfImportBackend,
   type PhilosophyReaderSettings
 } from "./llmProviders";
 
 const execFileAsync = promisify(execFile);
 const EXPLANATION_BATCH_SIZE = 2;
+const KEY_SENTENCE_BATCH_SIZE = 6;
 const MAX_EXPLANATION_OCCURRENCES = 5;
 const EXPLANATION_EXCERPT_RADIUS = 350;
 const MAX_EXPLANATION_CLUSTERS = 3;
@@ -57,14 +65,17 @@ const DEFAULT_SETTINGS: PhilosophyReaderSettings = {
   anthropicApiKey: "",
   openaiModel: "gpt-5.4-mini",
   anthropicModel: "claude-sonnet-4-6",
-  pdfImportBackend: "markitdown",
-  markitdownCommand: "markitdown",
+  pdfImportBackend: "scholar-md",
+  scholarMdCommand: "scholar-md",
   markerCommand: "marker_single",
   maxPrecomputedTerms: 40,
   glossaryFolderName: "_glossary",
+  glossaryExplanationLength: "standard",
   hoverDelayMs: 350,
   windowSize: 4,
-  windowOverlap: 1
+  windowOverlap: 1,
+  autoHighlightKeySentences: true,
+  keySentenceDensity: "medium"
 };
 
 interface GlossaryIndex {
@@ -74,6 +85,37 @@ interface GlossaryIndex {
 
 interface RebuildOptions {
   background?: boolean;
+}
+
+interface ImportPdfOptions {
+  precomputeGlossary?: boolean;
+}
+
+interface ResolvedCommand {
+  command: string;
+  source: "settings" | "local" | "path";
+}
+
+interface HighlightKeySentencesOptions {
+  background?: boolean;
+  silentSuccess?: boolean;
+}
+
+interface KeySentenceSidecarRecord {
+  paragraphId: string;
+  paragraphIndex: number;
+  sentenceId: string;
+  text: string;
+}
+
+interface KeySentenceSidecar {
+  version: number;
+  paper: string;
+  provider: string;
+  model: string;
+  density: KeySentenceDensity;
+  updated: string;
+  highlights: KeySentenceSidecarRecord[];
 }
 
 export default class PhilosophyReaderPlugin extends Plugin {
@@ -90,6 +132,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
 
     this.addSettingTab(new PhilosophyReaderSettingTab(this.app, this));
     this.registerEditorExtension(this.buildHoverExtension());
+    this.registerContextMenuActions();
 
     this.addCommand({
       id: "import-pdf-as-philosophy-paper",
@@ -101,7 +144,23 @@ export default class PhilosophyReaderPlugin extends Plugin {
           return canRun;
         }
         if (canRun) {
-          void this.importPdfAsPaper(file);
+          void this.importPdfAsPaper(file, { precomputeGlossary: true });
+        }
+        return canRun;
+      }
+    });
+
+    this.addCommand({
+      id: "convert-current-pdf-to-markdown",
+      name: "Convert Current PDF to Markdown",
+      checkCallback: (checking) => {
+        const file = this.app.workspace.getActiveFile();
+        const canRun = file instanceof TFile && file.extension.toLowerCase() === "pdf";
+        if (checking) {
+          return canRun;
+        }
+        if (canRun) {
+          void this.importPdfAsPaper(file, { precomputeGlossary: false });
         }
         return canRun;
       }
@@ -118,6 +177,38 @@ export default class PhilosophyReaderPlugin extends Plugin {
         }
         if (canRun) {
           void this.rebuildGlossary(file, { background: false });
+        }
+        return canRun;
+      }
+    });
+
+    this.addCommand({
+      id: "extract-terms-and-explain-current-markdown",
+      name: "Extract Terms and Explain from Current Markdown",
+      checkCallback: (checking) => {
+        const file = this.app.workspace.getActiveFile();
+        const canRun = file instanceof TFile && file.extension.toLowerCase() === "md";
+        if (checking) {
+          return canRun;
+        }
+        if (canRun) {
+          void this.extractTermsAndExplain(file);
+        }
+        return canRun;
+      }
+    });
+
+    this.addCommand({
+      id: "highlight-key-sentences-for-current-paper",
+      name: "Highlight Key Sentences for Current Paper",
+      checkCallback: (checking) => {
+        const file = this.app.workspace.getActiveFile();
+        const canRun = file instanceof TFile && file.extension.toLowerCase() === "md";
+        if (checking) {
+          return canRun;
+        }
+        if (canRun) {
+          void this.highlightKeySentences(file, { background: false });
         }
         return canRun;
       }
@@ -160,9 +251,27 @@ export default class PhilosophyReaderPlugin extends Plugin {
     return pluginPath ? path.join(pluginPath, ".venv", "bin", "marker_single") : null;
   }
 
-  getLocalMarkitdownCommand(): string | null {
+  getLocalScholarMdCommand(): string | null {
     const pluginPath = this.getPluginDiskPath();
-    return pluginPath ? path.join(pluginPath, ".eval-venv", "bin", "markitdown") : null;
+    return pluginPath ? path.join(pluginPath, ".venv", "bin", "scholar-md") : null;
+  }
+
+  private resolveScholarMdCommand(): ResolvedCommand | null {
+    const configured = this.settings.scholarMdCommand.trim();
+    if (configured && configured !== DEFAULT_SETTINGS.scholarMdCommand) {
+      return { command: configured, source: "settings" };
+    }
+
+    const localScholarMd = this.getLocalScholarMdCommand();
+    if (localScholarMd && fs.existsSync(localScholarMd)) {
+      return { command: localScholarMd, source: "local" };
+    }
+
+    if (configured) {
+      return { command: configured, source: "path" };
+    }
+
+    return null;
   }
 
   private getPluginDiskPath(): string | null {
@@ -184,9 +293,20 @@ export default class PhilosophyReaderPlugin extends Plugin {
       void this.saveSettings();
     }
 
-    const localMarkitdown = this.getLocalMarkitdownCommand();
-    if (this.settings.markitdownCommand === DEFAULT_SETTINGS.markitdownCommand && localMarkitdown && fs.existsSync(localMarkitdown)) {
-      this.settings.markitdownCommand = localMarkitdown;
+    if ((this.settings.pdfImportBackend as string) === "markitdown") {
+      this.settings.pdfImportBackend = "scholar-md";
+      void this.saveSettings();
+    }
+
+    const raw = this.settings as unknown as Record<string, unknown>;
+    if (raw.markitdownCommand !== undefined) {
+      delete raw.markitdownCommand;
+      void this.saveSettings();
+    }
+
+    const localScholarMd = this.getLocalScholarMdCommand();
+    if (this.settings.scholarMdCommand === DEFAULT_SETTINGS.scholarMdCommand && localScholarMd && fs.existsSync(localScholarMd)) {
+      this.settings.scholarMdCommand = localScholarMd;
       void this.saveSettings();
     }
   }
@@ -196,6 +316,40 @@ export default class PhilosophyReaderPlugin extends Plugin {
       async (view: EditorView, pos: number): Promise<Tooltip | null> => this.resolveHoverTooltip(view, pos),
       { hoverTime: this.settings.hoverDelayMs }
     );
+  }
+
+  private registerContextMenuActions(): void {
+    this.registerEvent(this.app.workspace.on("file-menu", (menu, abstractFile) => {
+      if (!(abstractFile instanceof TFile)) {
+        return;
+      }
+
+      const extension = abstractFile.extension.toLowerCase();
+      if (extension === "pdf") {
+        menu.addItem((item) => item
+          .setTitle("Convert PDF to Markdown")
+          .setIcon("file-text")
+          .onClick(() => {
+            void this.importPdfAsPaper(abstractFile, { precomputeGlossary: false });
+          }));
+      }
+
+      if (extension === "md") {
+        menu.addItem((item) => item
+          .setTitle("Highlight Key Sentences")
+          .setIcon("highlighter")
+          .onClick(() => {
+            void this.highlightKeySentences(abstractFile, { background: false });
+          }));
+
+        menu.addItem((item) => item
+          .setTitle("Extract Terms and Explain")
+          .setIcon("brain")
+          .onClick(() => {
+            void this.extractTermsAndExplain(abstractFile);
+          }));
+      }
+    }));
   }
 
   private async resolveHoverTooltip(view: EditorView, pos: number): Promise<Tooltip | null> {
@@ -306,14 +460,16 @@ export default class PhilosophyReaderPlugin extends Plugin {
     return root;
   }
 
-  private async importPdfAsPaper(file: TFile): Promise<void> {
+  private async importPdfAsPaper(file: TFile, options: ImportPdfOptions = {}): Promise<void> {
     try {
+      const precomputeGlossary = options.precomputeGlossary !== false;
       if (this.settings.pdfImportBackend === "marker" && !this.settings.markerCommand.trim()) {
         new Notice("Set the Marker CLI path in Philosophy Reader settings first.");
         return;
       }
-      if (this.settings.pdfImportBackend === "markitdown" && !this.settings.markitdownCommand.trim()) {
-        new Notice("Set the MarkItDown CLI path in Philosophy Reader settings first.");
+      const scholarMdCommand = this.resolveScholarMdCommand();
+      if (this.settings.pdfImportBackend === "scholar-md" && !scholarMdCommand) {
+        new Notice("Scholar-MD was not found. Run tools/scholar-md/bootstrap.sh or set the CLI path in settings.");
         return;
       }
 
@@ -356,9 +512,9 @@ export default class PhilosophyReaderPlugin extends Plugin {
       const pdfAbsPath = adapter.getFullPath(pdfTarget);
       const importedMarkdown = this.settings.pdfImportBackend === "marker"
         ? await this.convertPdfWithMarker(pdfAbsPath, paperFolder, adapter)
-        : this.settings.pdfImportBackend === "markitdown"
-          ? await this.convertPdfWithMarkitdown(pdfAbsPath, paperFolder, baseName, pdfTarget, adapter)
-        : await this.convertDigitalPdfWithPdfJs(pdfAbsPath, paperFolder, baseName, pdfTarget);
+        : this.settings.pdfImportBackend === "scholar-md"
+          ? await this.convertPdfWithScholarMd(pdfAbsPath, paperFolder, baseName, pdfTarget, adapter, scholarMdCommand!)
+          : await this.convertDigitalPdfWithPdfJs(pdfAbsPath, paperFolder, baseName, pdfTarget);
       const paperMarkdown = buildImportedPaperMarkdown(importedMarkdown, {
         title: baseName,
         sourcePdf: pdfTarget,
@@ -371,8 +527,17 @@ export default class PhilosophyReaderPlugin extends Plugin {
       const markdownFile = this.app.vault.getAbstractFileByPath(mdTarget);
       if (markdownFile instanceof TFile) {
         await this.app.workspace.getLeaf(false).openFile(markdownFile);
-        new Notice("PDF imported. Glossary preprocessing is running in the background. Check _glossary/_status.md for progress.");
-        void this.rebuildGlossary(markdownFile, { background: true });
+        if (precomputeGlossary) {
+          if (this.settings.autoHighlightKeySentences) {
+            new Notice("PDF imported. Key sentence highlighting and glossary preprocessing are running in the background.");
+            void this.preparePaperForReading(markdownFile, { background: true });
+          } else {
+            new Notice("PDF imported. Glossary preprocessing is running in the background. Check _glossary/_status.md for progress.");
+            void this.rebuildGlossary(markdownFile, { background: true });
+          }
+        } else {
+          new Notice("PDF converted to Markdown. Run 'Extract Terms and Explain from Current Markdown' when you are ready.");
+        }
       }
     } catch (error) {
       new Notice(`PDF import failed: ${toErrorMessage(error)}`);
@@ -408,56 +573,67 @@ export default class PhilosophyReaderPlugin extends Plugin {
     return buildMarkdownFromExtractedPdfText(extracted, paperTitle);
   }
 
-  private async convertPdfWithMarkitdown(
+  private async convertPdfWithScholarMd(
     pdfAbsPath: string,
     paperFolder: string,
     paperTitle: string,
     sourcePdfPath: string,
-    adapter: FileSystemAdapter
+    adapter: FileSystemAdapter,
+    resolvedCommand: ResolvedCommand
   ): Promise<string> {
-    this.setStatus("Philosophy Reader: converting PDF with MarkItDown...");
-    new Notice("Converting PDF with MarkItDown...");
+    this.setStatus("Philosophy Reader: converting PDF with Scholar-MD...");
+    const commandLabel = resolvedCommand.source === "local" ? "local Scholar-MD" : "Scholar-MD";
+    new Notice(`Converting PDF with ${commandLabel}...`);
 
-    const outputDir = path.join(adapter.getFullPath(paperFolder), ".markitdown-output");
+    const outputDir = path.join(adapter.getFullPath(paperFolder), ".scholar-md-output");
     if (fs.existsSync(outputDir)) {
       fs.rmSync(outputDir, { recursive: true, force: true });
     }
     fs.mkdirSync(outputDir, { recursive: true });
-    const outputPath = path.join(outputDir, "markitdown.md");
+    const outputPath = path.join(outputDir, "scholar-md.md");
+    const diagnosticsPath = path.join(outputDir, "scholar-md.diagnostics.json");
     const logPath = path.join(outputDir, "import.log");
-    const markitdownArgs = [
+    const scholarMdArgs = [
       pdfAbsPath,
       "-o",
-      outputPath
+      outputPath,
+      "--emit-diagnostics",
+      "--diagnostics-output",
+      diagnosticsPath
     ];
 
     try {
-      const result = await execFileAsync(this.settings.markitdownCommand, markitdownArgs, {
+      const result = await execFileAsync(resolvedCommand.command, scholarMdArgs, {
         maxBuffer: 1024 * 1024 * 80
       });
-      fs.writeFileSync(logPath, formatMarkerLog(this.settings.markitdownCommand, markitdownArgs, result.stdout, result.stderr), "utf8");
+      fs.writeFileSync(logPath, formatMarkerLog(resolvedCommand.command, scholarMdArgs, result.stdout, result.stderr), "utf8");
     } catch (error) {
       const execError = error as Error & { stdout?: string; stderr?: string };
-      fs.writeFileSync(logPath, formatMarkerLog(this.settings.markitdownCommand, markitdownArgs, execError.stdout || "", execError.stderr || toErrorMessage(error)), "utf8");
-      throw new Error(`MarkItDown conversion failed. See ${logPath}`);
+      fs.writeFileSync(logPath, formatMarkerLog(resolvedCommand.command, scholarMdArgs, execError.stdout || "", execError.stderr || toErrorMessage(error)), "utf8");
+      throw new Error(`Scholar-MD conversion failed. See ${logPath}`);
     }
 
     if (!fs.existsSync(outputPath)) {
-      throw new Error("MarkItDown finished without producing a markdown file.");
+      throw new Error("Scholar-MD finished without producing a markdown file.");
     }
 
     const importedMarkdown = fs.readFileSync(outputPath, "utf8").trim();
     if (importedMarkdown.replace(/\s/g, "").length < 800) {
-      throw new Error("MarkItDown found very little selectable text. This PDF may need OCR.");
+      throw new Error("Scholar-MD found very little selectable text. This PDF may need OCR.");
     }
 
     const quality = analyzeMarkdownQuality(importedMarkdown);
-    await this.writeVaultTextFile(joinVaultPath(paperFolder, "_source", "markitdown.md"), `${importedMarkdown}\n`);
+    await this.writeVaultTextFile(joinVaultPath(paperFolder, "_source", "scholar-md.md"), `${importedMarkdown}\n`);
+    if (fs.existsSync(diagnosticsPath)) {
+      const diagnostics = fs.readFileSync(diagnosticsPath, "utf8");
+      await this.writeVaultTextFile(joinVaultPath(paperFolder, "_source", "scholar-md.diagnostics.json"), diagnostics);
+    }
     await this.writeVaultTextFile(
       joinVaultPath(paperFolder, "_source", "import-quality.json"),
       `${JSON.stringify({
-        backend: "markitdown",
-        command: this.settings.markitdownCommand,
+        backend: "scholar-md",
+        command: resolvedCommand.command,
+        commandSource: resolvedCommand.source,
         paperTitle,
         sourcePdf: sourcePdfPath,
         importedAt: new Date().toISOString(),
@@ -466,7 +642,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
     );
     await this.writeVaultTextFile(
       joinVaultPath(paperFolder, "_source", "import-warnings.md"),
-      buildImportWarningsMarkdown("MarkItDown", sourcePdfPath, quality)
+      buildImportWarningsMarkdown("Scholar-MD", sourcePdfPath, quality)
     );
 
     fs.rmSync(outputDir, { recursive: true, force: true });
@@ -516,6 +692,99 @@ export default class PhilosophyReaderPlugin extends Plugin {
     const importedMarkdown = fs.readFileSync(markerMarkdown, "utf8");
     fs.rmSync(outputDir, { recursive: true, force: true });
     return importedMarkdown;
+  }
+
+  private async preparePaperForReading(file: TFile, options: { background?: boolean } = {}): Promise<void> {
+    if (this.settings.autoHighlightKeySentences) {
+      await this.highlightKeySentences(file, {
+        background: options.background,
+        silentSuccess: true
+      });
+    }
+    await this.rebuildGlossary(file, { background: options.background });
+  }
+
+  private async highlightKeySentences(file: TFile, options: HighlightKeySentencesOptions = {}): Promise<boolean> {
+    try {
+      const provider = createLLMProvider(this.settings);
+      const originalMarkdown = await this.app.vault.read(file);
+      const existingSidecar = await this.loadKeySentenceSidecar(file);
+      const cleanedMarkdown = removeManagedSentenceHighlights(originalMarkdown, existingSidecar.highlights);
+      const paragraphs = splitParagraphs(cleanedMarkdown);
+      const candidates = buildKeySentenceParagraphs(cleanedMarkdown, paragraphs);
+
+      if (candidates.length === 0) {
+        if (cleanedMarkdown !== originalMarkdown) {
+          await this.writeVaultTextFile(file.path, cleanedMarkdown);
+        }
+        await this.writeKeySentenceSidecar(file, this.buildKeySentenceSidecar(file, provider.name, provider.model, this.settings.keySentenceDensity, []));
+        if (!options.silentSuccess) {
+          new Notice("No multi-sentence prose paragraphs were eligible for key-sentence highlighting.");
+        }
+        return true;
+      }
+
+      const selectedByParagraph = new Map<string, SentenceSpan>();
+      let processed = 0;
+      for (const batch of chunk(candidates, KEY_SENTENCE_BATCH_SIZE)) {
+        const rangeStart = processed + 1;
+        const rangeEnd = processed + batch.length;
+        processed += batch.length;
+        this.setStatus(`Philosophy Reader: selecting key sentences ${rangeStart}-${rangeEnd}/${candidates.length}`);
+
+        const selections = await provider.selectKeySentences({
+          paperTitle: getBaseName(file.path),
+          sourcePaper: file.path,
+          density: this.settings.keySentenceDensity,
+          paragraphs: batch.map((paragraph) => this.toKeySentenceParagraphInput(paragraph))
+        });
+
+        for (const selection of selections) {
+          if (selectedByParagraph.has(selection.paragraphId)) {
+            continue;
+          }
+          const sentence = findSelectedKeySentence(batch, selection.paragraphId, selection.sentenceId);
+          if (sentence) {
+            selectedByParagraph.set(selection.paragraphId, sentence);
+          }
+        }
+      }
+
+      const highlights = Array.from(selectedByParagraph.values());
+      const highlightedMarkdown = applySentenceHighlights(cleanedMarkdown, highlights);
+      if (highlightedMarkdown !== originalMarkdown) {
+        await this.writeVaultTextFile(file.path, highlightedMarkdown);
+      }
+      await this.writeKeySentenceSidecar(file, this.buildKeySentenceSidecar(file, provider.name, provider.model, this.settings.keySentenceDensity, highlights));
+
+      if (!options.silentSuccess) {
+        if (highlights.length === 0) {
+          new Notice("No key sentences were selected for highlighting.");
+        } else {
+          new Notice(`Highlighted key sentences: ${highlights.length} paragraph${highlights.length === 1 ? "" : "s"}.`);
+        }
+      }
+      return true;
+    } catch (error) {
+      new Notice(`Key sentence highlighting failed: ${toErrorMessage(error)}`);
+      console.error(error);
+      return false;
+    } finally {
+      this.setStatus("");
+    }
+  }
+
+  private toKeySentenceParagraphInput(paragraph: KeySentenceParagraph): KeySentenceParagraphInput {
+    return {
+      paragraphId: paragraph.id,
+      paragraphIndex: paragraph.paragraphIndex,
+      heading: paragraph.heading,
+      text: paragraph.text,
+      sentences: paragraph.sentences.map((sentence) => ({
+        id: sentence.id,
+        text: sentence.text
+      }))
+    };
   }
 
   private async rebuildGlossary(file: TFile, options: RebuildOptions): Promise<void> {
@@ -615,6 +884,10 @@ export default class PhilosophyReaderPlugin extends Plugin {
     } finally {
       this.setStatus("");
     }
+  }
+
+  private async extractTermsAndExplain(file: TFile): Promise<void> {
+    await this.rebuildGlossary(file, { background: false });
   }
 
   private buildExplainTermInput(markdown: string, paragraphs: ReturnType<typeof splitParagraphs>, term: TermCandidate): ExplainTermInput {
@@ -723,6 +996,87 @@ export default class PhilosophyReaderPlugin extends Plugin {
     await this.writeVaultTextFile(joinVaultPath(folderPath, "_status.md"), markdown);
   }
 
+  private buildKeySentenceSidecar(
+    file: TFile,
+    provider: string,
+    model: string,
+    density: KeySentenceDensity,
+    highlights: SentenceSpan[]
+  ): KeySentenceSidecar {
+    return {
+      version: 1,
+      paper: file.path,
+      provider,
+      model,
+      density,
+      updated: new Date().toISOString(),
+      highlights: highlights.map((sentence) => ({
+        paragraphId: sentence.paragraphId,
+        paragraphIndex: sentence.paragraphIndex,
+        sentenceId: sentence.id,
+        text: sentence.text
+      }))
+    };
+  }
+
+  private async loadKeySentenceSidecar(file: TFile): Promise<KeySentenceSidecar> {
+    const sidecarPath = this.keySentenceSidecarPath(file);
+    const existing = this.app.vault.getAbstractFileByPath(sidecarPath);
+    if (!(existing instanceof TFile)) {
+      return {
+        version: 1,
+        paper: file.path,
+        provider: "",
+        model: "",
+        density: "medium",
+        updated: "",
+        highlights: []
+      };
+    }
+
+    try {
+      const parsed = JSON.parse(await this.app.vault.read(existing)) as Partial<KeySentenceSidecar>;
+      return {
+        version: Number(parsed.version) || 1,
+        paper: typeof parsed.paper === "string" ? parsed.paper : file.path,
+        provider: typeof parsed.provider === "string" ? parsed.provider : "",
+        model: typeof parsed.model === "string" ? parsed.model : "",
+        density: parsed.density === "sparse" ? "sparse" : "medium",
+        updated: typeof parsed.updated === "string" ? parsed.updated : "",
+        highlights: Array.isArray(parsed.highlights)
+          ? parsed.highlights
+            .filter((item): item is KeySentenceSidecarRecord => !!item && typeof item === "object")
+            .map((item) => ({
+              paragraphId: typeof item.paragraphId === "string" ? item.paragraphId : "",
+              paragraphIndex: Number(item.paragraphIndex),
+              sentenceId: typeof item.sentenceId === "string" ? item.sentenceId : "",
+              text: typeof item.text === "string" ? item.text : ""
+            }))
+            .filter((item) => item.paragraphId && item.sentenceId && Number.isFinite(item.paragraphIndex) && item.text)
+          : []
+      };
+    } catch (error) {
+      console.error(error);
+      return {
+        version: 1,
+        paper: file.path,
+        provider: "",
+        model: "",
+        density: "medium",
+        updated: "",
+        highlights: []
+      };
+    }
+  }
+
+  private async writeKeySentenceSidecar(file: TFile, sidecar: KeySentenceSidecar): Promise<void> {
+    await this.ensureFolder(this.sourceFolderPath(file));
+    await this.writeVaultTextFile(
+      this.keySentenceSidecarPath(file),
+      `${JSON.stringify(sidecar, null, 2)}\n`
+    );
+  }
+
   private async writeVaultTextFile(vaultPath: string, text: string): Promise<void> {
     const existing = this.app.vault.getAbstractFileByPath(vaultPath);
     if (existing instanceof TFile) {
@@ -767,6 +1121,14 @@ export default class PhilosophyReaderPlugin extends Plugin {
 
   private glossaryFolderPath(file: TFile): string {
     return joinVaultPath(getParentPath(file.path), this.settings.glossaryFolderName);
+  }
+
+  private sourceFolderPath(file: TFile): string {
+    return joinVaultPath(getParentPath(file.path), "_source");
+  }
+
+  private keySentenceSidecarPath(file: TFile): string {
+    return joinVaultPath(this.sourceFolderPath(file), "key-sentences.json");
   }
 
   private async uniqueFolderPath(basePath: string): Promise<string> {
@@ -834,40 +1196,40 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("PDF import backend")
-      .setDesc("MarkItDown is the default digital-PDF path. PDF.js is a lightweight fallback; Marker is optional.")
+      .setDesc("Scholar-MD is the default digital-PDF path. PDF.js is a lightweight fallback; Marker is optional for scanned PDFs.")
       .addDropdown((dropdown) => dropdown
-        .addOption("markitdown", "MarkItDown CLI")
+        .addOption("scholar-md", "Scholar-MD")
         .addOption("pdfjs", "PDF.js text extraction")
         .addOption("marker", "Marker CLI")
         .setValue(this.plugin.settings.pdfImportBackend)
         .onChange(async (value) => {
-          const backend: PdfImportBackend = value === "marker" ? "marker" : value === "pdfjs" ? "pdfjs" : "markitdown";
+          const backend: PdfImportBackend = value === "marker" ? "marker" : value === "pdfjs" ? "pdfjs" : "scholar-md";
           this.plugin.settings.pdfImportBackend = backend;
           await this.plugin.saveSettings();
         }));
 
     new Setting(containerEl)
-      .setName("MarkItDown CLI path")
-      .setDesc("Used when the backend is MarkItDown CLI. Outputs quality warnings under _source/.")
+      .setName("Scholar-MD CLI path")
+      .setDesc("Resolution order: explicit setting, plugin .venv local tool, then shell PATH. If no local tool exists, run tools/scholar-md/bootstrap.sh.")
       .addText((text) => text
-        .setPlaceholder("markitdown")
-        .setValue(this.plugin.settings.markitdownCommand)
+        .setPlaceholder("scholar-md")
+        .setValue(this.plugin.settings.scholarMdCommand)
         .onChange(async (value) => {
-          this.plugin.settings.markitdownCommand = value.trim();
+          this.plugin.settings.scholarMdCommand = value.trim();
           await this.plugin.saveSettings();
         }))
       .addButton((button) => button
-        .setButtonText("Use local MarkItDown")
+        .setButtonText("Use local Scholar-MD")
         .onClick(async () => {
-          const localCommand = this.plugin.getLocalMarkitdownCommand();
+          const localCommand = this.plugin.getLocalScholarMdCommand();
           if (!localCommand || !fs.existsSync(localCommand)) {
-            new Notice("Local markitdown was not found in this plugin's .eval-venv.");
+            new Notice("Local scholar-md was not found in this plugin's .venv.");
             return;
           }
-          this.plugin.settings.markitdownCommand = localCommand;
+          this.plugin.settings.scholarMdCommand = localCommand;
           await this.plugin.saveSettings();
           this.display();
-          new Notice("MarkItDown CLI path set to local markitdown.");
+          new Notice("Scholar-MD CLI path set to local scholar-md.");
         }));
 
     new Setting(containerEl)
@@ -954,6 +1316,30 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
+    containerEl.createEl("h3", { text: "Reading prep" });
+
+    new Setting(containerEl)
+      .setName("Auto highlight key sentences after import")
+      .setDesc("When enabled, import runs key-sentence highlighting before glossary preprocessing.")
+      .addToggle((toggle) => toggle
+        .setValue(this.plugin.settings.autoHighlightKeySentences)
+        .onChange(async (value) => {
+          this.plugin.settings.autoHighlightKeySentences = value;
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName("Key sentence density")
+      .setDesc("Medium matches the current behavior. Sparse highlights only structurally important sentences.")
+      .addDropdown((dropdown) => dropdown
+        .addOption("medium", "Medium")
+        .addOption("sparse", "Sparse")
+        .setValue(this.plugin.settings.keySentenceDensity)
+        .onChange(async (value) => {
+          this.plugin.settings.keySentenceDensity = value === "sparse" ? "sparse" : "medium";
+          await this.plugin.saveSettings();
+        }));
+
     containerEl.createEl("h3", { text: "Glossary" });
 
     new Setting(containerEl)
@@ -974,6 +1360,18 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
         .setValue(this.plugin.settings.glossaryFolderName)
         .onChange(async (value) => {
           this.plugin.settings.glossaryFolderName = value.trim() || DEFAULT_SETTINGS.glossaryFolderName;
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName("Glossary explanation length")
+      .setDesc("Controls newly generated glossary entries. Standard keeps the current contextual explanation; Brief stores a short meaning-only explanation. Rebuild glossary entries to refresh existing cache.")
+      .addDropdown((dropdown) => dropdown
+        .addOption("standard", "Standard (current)")
+        .addOption("brief", "Brief meaning only")
+        .setValue(this.plugin.settings.glossaryExplanationLength)
+        .onChange(async (value) => {
+          this.plugin.settings.glossaryExplanationLength = value === "brief" ? "brief" : "standard";
           await this.plugin.saveSettings();
         }));
 
@@ -1238,6 +1636,16 @@ function chunk<T>(items: T[], size: number): T[][] {
     chunks.push(items.slice(index, index + size));
   }
   return chunks;
+}
+
+function findSelectedKeySentence(paragraphs: KeySentenceParagraph[], paragraphId: string, sentenceId: string): SentenceSpan | null {
+  for (const paragraph of paragraphs) {
+    if (paragraph.id !== paragraphId) {
+      continue;
+    }
+    return paragraph.sentences.find((sentence) => sentence.id === sentenceId) || null;
+  }
+  return null;
 }
 
 function findMatchingInput(inputs: ExplainTermInput[], explanation: ExplainedTerm): ExplainTermInput | null {

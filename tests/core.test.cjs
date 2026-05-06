@@ -3,8 +3,10 @@ const test = require("node:test");
 
 const {
   analyzeMarkdownQuality,
+  applySentenceHighlights,
   buildContextClusters,
   buildGlossaryMarkdown,
+  buildKeySentenceParagraphs,
   buildParagraphWindows,
   chooseClusterForOffset,
   findPreparedTermAtPosition,
@@ -15,7 +17,9 @@ const {
   parseGlossaryMarkdown,
   parseJsonFromText,
   parseLooseJsonFromText,
+  removeManagedSentenceHighlights,
   slugify,
+  splitParagraphSentences,
   splitParagraphs
 } = require("../src/core.js");
 
@@ -54,6 +58,7 @@ test("buildParagraphWindows uses overlap", () => {
     index,
     start: index * 10,
     end: index * 10 + 5,
+    raw: `Paragraph ${index}`,
     text: `Paragraph ${index} has enough content to be included.`,
     heading: ""
   }));
@@ -87,6 +92,13 @@ test("findTermOccurrences respects word boundaries", () => {
   assert.equal(occurrences[1].text, "idealism");
 });
 
+test("findTermOccurrences still matches terms inside sentence highlights", () => {
+  const markdown = "==Transcendental idealism== frames the opening move. A later sentence reuses transcendental idealism.";
+  const occurrences = findTermOccurrences(markdown, "transcendental idealism", []);
+
+  assert.equal(occurrences.length, 2);
+});
+
 test("buildContextClusters groups occurrences by heading", () => {
   const markdown = [
     "# First",
@@ -108,6 +120,37 @@ test("buildContextClusters groups occurrences by heading", () => {
   assert.equal(clusters.length, 2);
   assert.equal(clusters[0].label, "First");
   assert.equal(clusters[1].label, "Second");
+});
+
+test("splitParagraphSentences produces stable sentence ids and offsets", () => {
+  const markdown = [
+    "# Section One",
+    "",
+    "The first sentence introduces the central claim. The second sentence sharpens the objection. The third sentence resolves the tension."
+  ].join("\n");
+
+  const paragraph = splitParagraphs(markdown)[0];
+  const sentences = splitParagraphSentences(markdown, paragraph);
+
+  assert.equal(sentences.length, 3);
+  assert.equal(sentences[0].id, "p-0-s-1");
+  assert.equal(sentences[1].id, "p-0-s-2");
+  assert.equal(markdown.slice(sentences[1].startOffset, sentences[1].endOffset), "The second sentence sharpens the objection.");
+});
+
+test("buildKeySentenceParagraphs skips single-sentence and short paragraphs", () => {
+  const markdown = [
+    "This paragraph is long enough to count but it still has only one sentence and should be skipped.",
+    "",
+    "A longer paragraph opens with a claim about practical reason. A second sentence develops the argumentative stakes for the reader."
+  ].join("\n");
+
+  const paragraphs = splitParagraphs(markdown);
+  const candidates = buildKeySentenceParagraphs(markdown, paragraphs, 40);
+
+  assert.equal(candidates.length, 1);
+  assert.equal(candidates[0].paragraphIndex, 1);
+  assert.equal(candidates[0].sentences.length, 2);
 });
 
 test("glossary markdown round-trips cache metadata", () => {
@@ -138,6 +181,35 @@ test("glossary markdown round-trips cache metadata", () => {
   assert.equal(parsed.term, "Transcendental Idealism");
   assert.equal(parsed.definition, "A context-aware definition.");
   assert.equal(parsed.clusters[0].usageNote, "It frames the local argument.");
+});
+
+test("applySentenceHighlights is idempotent for the same sentence", () => {
+  const markdown = "The first sentence frames the issue. The second sentence states the decisive claim. The third sentence applies it.";
+  const paragraph = splitParagraphs(markdown)[0];
+  const sentence = splitParagraphSentences(markdown, paragraph)[1];
+
+  const highlighted = applySentenceHighlights(markdown, [sentence]);
+  assert.equal(highlighted, "The first sentence frames the issue. ==The second sentence states the decisive claim.== The third sentence applies it.");
+  assert.equal(applySentenceHighlights(highlighted, [sentence]), highlighted);
+});
+
+test("removeManagedSentenceHighlights removes only targeted highlights", () => {
+  const markdown = "==The first sentence states the main claim.== The second sentence remains plain. ==The third sentence was highlighted manually.==";
+  const cleaned = removeManagedSentenceHighlights(markdown, [
+    {
+      paragraphIndex: 0,
+      text: "The first sentence states the main claim."
+    }
+  ]);
+
+  assert.equal(cleaned, "The first sentence states the main claim. The second sentence remains plain. ==The third sentence was highlighted manually.==");
+});
+
+test("splitParagraphs strips sentence highlight markup from paragraph text", () => {
+  const markdown = "==Transcendental idealism== structures the opening claim. A later sentence extends the same contrast.";
+  const paragraphs = splitParagraphs(markdown);
+
+  assert.equal(paragraphs[0].text, "Transcendental idealism structures the opening claim. A later sentence extends the same contrast.");
 });
 
 test("findPreparedTermAtPosition prefers longest matching term", () => {
