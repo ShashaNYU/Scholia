@@ -677,9 +677,7 @@ function buildGlossaryMarkdown(entry) {
     model: entry.model || "",
     created: entry.created || new Date().toISOString(),
     updated: entry.updated || new Date().toISOString(),
-    firstUse: entry.firstUse || "",
     definition: entry.definition || "",
-    authorUsage: entry.authorUsage || "",
     sep_enabled: false,
     clusters
   };
@@ -695,7 +693,7 @@ function buildGlossaryMarkdown(entry) {
     })
     .join("\n\n");
 
-  return `---\n${frontmatterText}\n---\n\n# ${entry.term}\n\n${entry.definition || ""}\n\n## Author usage\n\n${entry.authorUsage || ""}\n\n## First use\n\n${entry.firstUse || "No reliable first definition identified in the supplied context."}\n\n## Usage notes\n\n${usageNotes}\n`;
+  return `---\n${frontmatterText}\n---\n\n# ${entry.term}\n\n${entry.definition || ""}\n\n## Usage notes\n\n${usageNotes}\n`;
 }
 
 function parseGlossaryMarkdown(markdown) {
@@ -723,9 +721,7 @@ function parseGlossaryMarkdown(markdown) {
     model: data.model || "",
     created: data.created || "",
     updated: data.updated || "",
-    firstUse: data.firstUse || "",
     definition: data.definition || "",
-    authorUsage: data.authorUsage || "",
     clusters: Array.isArray(data.clusters) ? data.clusters : [],
     sep_enabled: Boolean(data.sep_enabled)
   };

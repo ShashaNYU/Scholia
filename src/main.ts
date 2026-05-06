@@ -65,8 +65,10 @@ const DEFAULT_SETTINGS: PhilosophyReaderSettings = {
   anthropicApiKey: "",
   openaiModel: "gpt-5.4-mini",
   anthropicModel: "claude-sonnet-4-6",
-  pdfImportBackend: "scholar-md",
-  scholarMdCommand: "scholar-md",
+  pdfImportBackend: "paper2md",
+  paper2mdCommand: "paper2md",
+  paper2mdModel: "claude-sonnet-4-6",
+  paper2mdConcurrency: 3,
   markerCommand: "marker_single",
   maxPrecomputedTerms: 40,
   glossaryFolderName: "_glossary",
@@ -93,7 +95,7 @@ interface ImportPdfOptions {
 
 interface ResolvedCommand {
   command: string;
-  source: "settings" | "local" | "path";
+  source: "local" | "path";
 }
 
 interface HighlightKeySentencesOptions {
@@ -136,7 +138,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
 
     this.addCommand({
       id: "import-pdf-as-philosophy-paper",
-      name: "Import PDF as Philosophy Paper",
+      name: "Import PDF and Prepare for Reading",
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
         const canRun = file instanceof TFile && file.extension.toLowerCase() === "pdf";
@@ -152,7 +154,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
 
     this.addCommand({
       id: "convert-current-pdf-to-markdown",
-      name: "Convert Current PDF to Markdown",
+      name: "Convert Current PDF to Markdown Only",
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
         const canRun = file instanceof TFile && file.extension.toLowerCase() === "pdf";
@@ -256,22 +258,35 @@ export default class PhilosophyReaderPlugin extends Plugin {
     return pluginPath ? path.join(pluginPath, ".venv", "bin", "scholar-md") : null;
   }
 
-  private resolveScholarMdCommand(): ResolvedCommand | null {
-    const configured = this.settings.scholarMdCommand.trim();
-    if (configured && configured !== DEFAULT_SETTINGS.scholarMdCommand) {
-      return { command: configured, source: "settings" };
-    }
+  getLocalPaper2mdCommand(): string | null {
+    const pluginPath = this.getPluginDiskPath();
+    return pluginPath ? path.join(pluginPath, ".venv", "bin", "paper2md") : null;
+  }
 
+  private resolveScholarMdCommand(): ResolvedCommand {
     const localScholarMd = this.getLocalScholarMdCommand();
     if (localScholarMd && fs.existsSync(localScholarMd)) {
       return { command: localScholarMd, source: "local" };
     }
 
-    if (configured) {
-      return { command: configured, source: "path" };
+    return { command: "scholar-md", source: "path" };
+  }
+
+  private resolvePaper2mdCommand(): ResolvedCommand {
+    const configured = this.settings.paper2mdCommand.trim();
+    if (configured && configured !== DEFAULT_SETTINGS.paper2mdCommand) {
+      return {
+        command: configured,
+        source: looksLikeLocalPath(configured) ? "local" : "path"
+      };
     }
 
-    return null;
+    const localPaper2md = this.getLocalPaper2mdCommand();
+    if (localPaper2md && fs.existsSync(localPaper2md)) {
+      return { command: localPaper2md, source: "local" };
+    }
+
+    return { command: DEFAULT_SETTINGS.paper2mdCommand, source: "path" };
   }
 
   private getPluginDiskPath(): string | null {
@@ -288,13 +303,13 @@ export default class PhilosophyReaderPlugin extends Plugin {
     const markerCommand = this.settings.markerCommand || "";
     const pointsAtDeletedLocalMarker = markerCommand.includes(`${path.sep}.venv${path.sep}bin${path.sep}marker_single`) && !fs.existsSync(markerCommand);
     if (pointsAtDeletedLocalMarker) {
-      this.settings.pdfImportBackend = "pdfjs";
+      this.settings.pdfImportBackend = DEFAULT_SETTINGS.pdfImportBackend;
       this.settings.markerCommand = DEFAULT_SETTINGS.markerCommand;
       void this.saveSettings();
     }
 
-    if ((this.settings.pdfImportBackend as string) === "markitdown") {
-      this.settings.pdfImportBackend = "scholar-md";
+    if ((this.settings.pdfImportBackend as string) === "markitdown" || (this.settings.pdfImportBackend as string) === "pdfjs") {
+      this.settings.pdfImportBackend = DEFAULT_SETTINGS.pdfImportBackend;
       void this.saveSettings();
     }
 
@@ -303,10 +318,8 @@ export default class PhilosophyReaderPlugin extends Plugin {
       delete raw.markitdownCommand;
       void this.saveSettings();
     }
-
-    const localScholarMd = this.getLocalScholarMdCommand();
-    if (this.settings.scholarMdCommand === DEFAULT_SETTINGS.scholarMdCommand && localScholarMd && fs.existsSync(localScholarMd)) {
-      this.settings.scholarMdCommand = localScholarMd;
+    if (raw.scholarMdCommand !== undefined) {
+      delete raw.scholarMdCommand;
       void this.saveSettings();
     }
   }
@@ -327,7 +340,14 @@ export default class PhilosophyReaderPlugin extends Plugin {
       const extension = abstractFile.extension.toLowerCase();
       if (extension === "pdf") {
         menu.addItem((item) => item
-          .setTitle("Convert PDF to Markdown")
+          .setTitle("Import PDF and Prepare for Reading")
+          .setIcon("sparkles")
+          .onClick(() => {
+            void this.importPdfAsPaper(abstractFile, { precomputeGlossary: true });
+          }));
+
+        menu.addItem((item) => item
+          .setTitle("Convert PDF to Markdown Only")
           .setIcon("file-text")
           .onClick(() => {
             void this.importPdfAsPaper(abstractFile, { precomputeGlossary: false });
@@ -398,17 +418,6 @@ export default class PhilosophyReaderPlugin extends Plugin {
     definition.setText(entry.definition || "No definition was generated.");
     root.appendChild(definition);
 
-    if (entry.authorUsage) {
-      const label = document.createElement("div");
-      label.addClass("philosophy-reader-label");
-      label.setText("Author usage");
-      root.appendChild(label);
-
-      const authorUsage = document.createElement("p");
-      authorUsage.setText(entry.authorUsage);
-      root.appendChild(authorUsage);
-    }
-
     if (cluster?.usageNote) {
       const label = document.createElement("div");
       label.addClass("philosophy-reader-label");
@@ -418,17 +427,6 @@ export default class PhilosophyReaderPlugin extends Plugin {
       const usage = document.createElement("p");
       usage.setText(cluster.usageNote);
       root.appendChild(usage);
-    }
-
-    if (entry.firstUse) {
-      const label = document.createElement("div");
-      label.addClass("philosophy-reader-label");
-      label.setText("First use");
-      root.appendChild(label);
-
-      const firstUse = document.createElement("p");
-      firstUse.setText(entry.firstUse);
-      root.appendChild(firstUse);
     }
 
     return root;
@@ -468,10 +466,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
         return;
       }
       const scholarMdCommand = this.resolveScholarMdCommand();
-      if (this.settings.pdfImportBackend === "scholar-md" && !scholarMdCommand) {
-        new Notice("Scholar-MD was not found. Run tools/scholar-md/bootstrap.sh or set the CLI path in settings.");
-        return;
-      }
+      const paper2mdCommand = this.resolvePaper2mdCommand();
 
       const adapter = this.app.vault.adapter;
       if (!(adapter instanceof FileSystemAdapter)) {
@@ -512,9 +507,9 @@ export default class PhilosophyReaderPlugin extends Plugin {
       const pdfAbsPath = adapter.getFullPath(pdfTarget);
       const importedMarkdown = this.settings.pdfImportBackend === "marker"
         ? await this.convertPdfWithMarker(pdfAbsPath, paperFolder, adapter)
-        : this.settings.pdfImportBackend === "scholar-md"
-          ? await this.convertPdfWithScholarMd(pdfAbsPath, paperFolder, baseName, pdfTarget, adapter, scholarMdCommand!)
-          : await this.convertDigitalPdfWithPdfJs(pdfAbsPath, paperFolder, baseName, pdfTarget);
+        : this.settings.pdfImportBackend === "paper2md"
+          ? await this.convertPdfWithPaper2md(pdfAbsPath, paperFolder, baseName, pdfTarget, adapter, paper2mdCommand)
+          : await this.convertPdfWithScholarMd(pdfAbsPath, paperFolder, baseName, pdfTarget, adapter, scholarMdCommand);
       const paperMarkdown = buildImportedPaperMarkdown(importedMarkdown, {
         title: baseName,
         sourcePdf: pdfTarget,
@@ -547,30 +542,95 @@ export default class PhilosophyReaderPlugin extends Plugin {
     }
   }
 
-  private async convertDigitalPdfWithPdfJs(
+  private async convertPdfWithPaper2md(
     pdfAbsPath: string,
     paperFolder: string,
     paperTitle: string,
-    sourcePdfPath: string
+    sourcePdfPath: string,
+    adapter: FileSystemAdapter,
+    resolvedCommand: ResolvedCommand
   ): Promise<string> {
-    this.setStatus("Philosophy Reader: extracting selectable PDF text...");
-    new Notice("Extracting selectable PDF text...");
-
-    const extracted = await extractPdfTextWithPdfJs(pdfAbsPath);
-    if (extracted.totalChars < 800) {
-      throw new Error("PDF.js found very little selectable text. This PDF may be scanned; use the Marker backend for now.");
+    const model = this.resolvePaper2mdModel();
+    const concurrency = Math.max(1, Math.round(this.settings.paper2mdConcurrency || DEFAULT_SETTINGS.paper2mdConcurrency));
+    const usingOpenAI = isOpenAIModel(model);
+    if (usingOpenAI && !this.settings.openaiApiKey.trim()) {
+      throw new Error("Paper2MD is configured with an OpenAI model, but the OpenAI API key is empty.");
+    }
+    if (!usingOpenAI && !this.settings.anthropicApiKey.trim()) {
+      throw new Error("Paper2MD is configured with an Anthropic model, but the Anthropic API key is empty.");
     }
 
+    this.setStatus("Philosophy Reader: converting PDF with Paper2MD...");
+    const commandLabel = resolvedCommand.source === "local" ? "local Paper2MD" : "Paper2MD";
+    new Notice(`Converting PDF with ${commandLabel}...`);
+
+    const outputDir = path.join(adapter.getFullPath(paperFolder), ".paper2md-output");
+    if (fs.existsSync(outputDir)) {
+      fs.rmSync(outputDir, { recursive: true, force: true });
+    }
+    fs.mkdirSync(outputDir, { recursive: true });
+    const logPath = path.join(outputDir, "import.log");
+    const paper2mdArgs = [
+      "convert",
+      pdfAbsPath,
+      "-o",
+      outputDir,
+      "--model",
+      model,
+      "--concurrency",
+      String(concurrency)
+    ];
+
+    try {
+      const result = await execFileAsync(resolvedCommand.command, paper2mdArgs, {
+        maxBuffer: 1024 * 1024 * 80,
+        env: this.buildPaper2mdEnv()
+      });
+      fs.writeFileSync(logPath, formatMarkerLog(resolvedCommand.command, paper2mdArgs, result.stdout, result.stderr), "utf8");
+    } catch (error) {
+      const execError = error as Error & { stdout?: string; stderr?: string };
+      fs.writeFileSync(logPath, formatMarkerLog(resolvedCommand.command, paper2mdArgs, execError.stdout || "", execError.stderr || toErrorMessage(error)), "utf8");
+      throw new Error(`Paper2MD conversion failed. See ${logPath}`);
+    }
+
+    const paper2mdMarkdown = findLargestMarkdownFile(outputDir);
+    if (!paper2mdMarkdown) {
+      throw new Error("Paper2MD finished without producing a markdown file.");
+    }
+
+    const importedMarkdown = fs.readFileSync(paper2mdMarkdown, "utf8").trim();
+    if (importedMarkdown.replace(/\s/g, "").length < 800) {
+      throw new Error("Paper2MD found very little readable text. This PDF may still need targeted OCR or a different import backend.");
+    }
+
+    const quality = analyzeMarkdownQuality(importedMarkdown);
+    await this.writeVaultTextFile(joinVaultPath(paperFolder, "_source", "paper2md.md"), `${importedMarkdown}\n`);
     await this.writeVaultTextFile(
-      joinVaultPath(paperFolder, "_source", "raw-pages.json"),
+      joinVaultPath(paperFolder, "_source", "import-quality.json"),
       `${JSON.stringify({
-        ...extracted,
+        backend: "paper2md",
+        command: resolvedCommand.command,
+        commandSource: resolvedCommand.source,
+        model,
+        llmProvider: usingOpenAI ? "openai" : "anthropic",
+        concurrency,
+        generatedFile: path.basename(paper2mdMarkdown),
         paperTitle,
-        sourcePdf: sourcePdfPath
+        sourcePdf: sourcePdfPath,
+        importedAt: new Date().toISOString(),
+        quality
       }, null, 2)}\n`
     );
+    await this.writeVaultTextFile(
+      joinVaultPath(paperFolder, "_source", "import-warnings.md"),
+      buildImportWarningsMarkdown("Paper2MD", sourcePdfPath, quality)
+    );
 
-    return buildMarkdownFromExtractedPdfText(extracted, paperTitle);
+    fs.rmSync(outputDir, { recursive: true, force: true });
+    if (quality.riskLevel === "high" || quality.riskLevel === "medium") {
+      new Notice(`PDF imported with ${quality.riskLevel} extraction risk. Check _source/import-warnings.md before trusting formulas.`);
+    }
+    return importedMarkdown;
   }
 
   private async convertPdfWithScholarMd(
@@ -583,7 +643,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
   ): Promise<string> {
     this.setStatus("Philosophy Reader: converting PDF with Scholar-MD...");
     const commandLabel = resolvedCommand.source === "local" ? "local Scholar-MD" : "Scholar-MD";
-    new Notice(`Converting PDF with ${commandLabel}...`);
+    new Notice(`Converting PDF with ${commandLabel} (beta)...`);
 
     const outputDir = path.join(adapter.getFullPath(paperFolder), ".scholar-md-output");
     if (fs.existsSync(outputDir)) {
@@ -692,6 +752,25 @@ export default class PhilosophyReaderPlugin extends Plugin {
     const importedMarkdown = fs.readFileSync(markerMarkdown, "utf8");
     fs.rmSync(outputDir, { recursive: true, force: true });
     return importedMarkdown;
+  }
+
+  private resolvePaper2mdModel(): string {
+    const override = this.settings.paper2mdModel.trim();
+    if (override) {
+      return override;
+    }
+    return DEFAULT_SETTINGS.paper2mdModel;
+  }
+
+  private buildPaper2mdEnv(): NodeJS.ProcessEnv {
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    if (this.settings.openaiApiKey.trim()) {
+      env.OPENAI_API_KEY = this.settings.openaiApiKey.trim();
+    }
+    if (this.settings.anthropicApiKey.trim()) {
+      env.ANTHROPIC_API_KEY = this.settings.anthropicApiKey.trim();
+    }
+    return env;
   }
 
   private async preparePaperForReading(file: TFile, options: { background?: boolean } = {}): Promise<void> {
@@ -935,9 +1014,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
       model,
       created: now,
       updated: now,
-      firstUse: explanation.firstUse || "",
       definition: explanation.definition || "",
-      authorUsage: explanation.authorUsage || "",
       clusters,
       sep_enabled: false
     };
@@ -1192,49 +1269,76 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
     containerEl.empty();
 
     containerEl.createEl("h2", { text: "Philosophy Reader" });
-    containerEl.createEl("h3", { text: "PDF import" });
+    containerEl.createEl("h3", { text: "Markdown generation" });
 
     new Setting(containerEl)
       .setName("PDF import backend")
-      .setDesc("Scholar-MD is the default digital-PDF path. PDF.js is a lightweight fallback; Marker is optional for scanned PDFs.")
+      .setDesc("Paper2MD is now the default path. Scholar-MD stays available as a lighter beta path; Marker remains optional and not recommended.")
       .addDropdown((dropdown) => dropdown
-        .addOption("scholar-md", "Scholar-MD")
-        .addOption("pdfjs", "PDF.js text extraction")
-        .addOption("marker", "Marker CLI")
+        .addOption("paper2md", "Paper2MD (LLM-native)")
+        .addOption("scholar-md", "Scholar-MD (beta)")
+        .addOption("marker", "Marker CLI (not recommended)")
         .setValue(this.plugin.settings.pdfImportBackend)
         .onChange(async (value) => {
-          const backend: PdfImportBackend = value === "marker" ? "marker" : value === "pdfjs" ? "pdfjs" : "scholar-md";
+          const backend: PdfImportBackend = value === "marker"
+            ? "marker"
+            : value === "paper2md"
+              ? "paper2md"
+              : "scholar-md";
           this.plugin.settings.pdfImportBackend = backend;
           await this.plugin.saveSettings();
         }));
 
     new Setting(containerEl)
-      .setName("Scholar-MD CLI path")
-      .setDesc("Resolution order: explicit setting, plugin .venv local tool, then shell PATH. If no local tool exists, run tools/scholar-md/bootstrap.sh.")
+      .setName("Paper2MD CLI path")
+      .setDesc("Optional. Resolution order: explicit setting, plugin .venv local tool, then shell PATH. Leave as `paper2md` to use the default resolver.")
       .addText((text) => text
-        .setPlaceholder("scholar-md")
-        .setValue(this.plugin.settings.scholarMdCommand)
+        .setPlaceholder("paper2md")
+        .setValue(this.plugin.settings.paper2mdCommand)
         .onChange(async (value) => {
-          this.plugin.settings.scholarMdCommand = value.trim();
+          this.plugin.settings.paper2mdCommand = value.trim() || DEFAULT_SETTINGS.paper2mdCommand;
           await this.plugin.saveSettings();
         }))
       .addButton((button) => button
-        .setButtonText("Use local Scholar-MD")
+        .setButtonText("Use local Paper2MD")
         .onClick(async () => {
-          const localCommand = this.plugin.getLocalScholarMdCommand();
+          const localCommand = this.plugin.getLocalPaper2mdCommand();
           if (!localCommand || !fs.existsSync(localCommand)) {
-            new Notice("Local scholar-md was not found in this plugin's .venv.");
+            new Notice("Local paper2md was not found in this plugin's .venv.");
             return;
           }
-          this.plugin.settings.scholarMdCommand = localCommand;
+          this.plugin.settings.paper2mdCommand = localCommand;
           await this.plugin.saveSettings();
           this.display();
-          new Notice("Scholar-MD CLI path set to local scholar-md.");
+          new Notice("Paper2MD CLI path set to local paper2md.");
+        }));
+
+    new Setting(containerEl)
+      .setName("Markdown generation model")
+      .setDesc("Used by Paper2MD. Provider is inferred from the model name, so API keys stay global and only need to be filled once.")
+      .addText((text) => text
+        .setPlaceholder(DEFAULT_SETTINGS.paper2mdModel)
+        .setValue(this.plugin.settings.paper2mdModel)
+        .onChange(async (value) => {
+          this.plugin.settings.paper2mdModel = value.trim() || DEFAULT_SETTINGS.paper2mdModel;
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName("Paper2MD concurrency")
+      .setDesc("Only used when the backend is Paper2MD. Higher values are faster but cost more API work in parallel.")
+      .addSlider((slider) => slider
+        .setLimits(1, 6, 1)
+        .setDynamicTooltip()
+        .setValue(this.plugin.settings.paper2mdConcurrency)
+        .onChange(async (value) => {
+          this.plugin.settings.paper2mdConcurrency = value;
+          await this.plugin.saveSettings();
         }));
 
     new Setting(containerEl)
       .setName("Marker CLI path")
-      .setDesc("Optional. Only used when the backend is Marker CLI.")
+      .setDesc("Optional. Only used when the backend is Marker CLI, which is not recommended.")
       .addText((text) => text
         .setPlaceholder("marker_single")
         .setValue(this.plugin.settings.markerCommand)
@@ -1256,19 +1360,7 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
           new Notice("Marker CLI path set to local marker_single.");
         }));
 
-    containerEl.createEl("h3", { text: "LLM" });
-
-    new Setting(containerEl)
-      .setName("LLM provider")
-      .setDesc("Currently supports OpenAI and Anthropic.")
-      .addDropdown((dropdown) => dropdown
-        .addOption("openai", "OpenAI (GPT)")
-        .addOption("anthropic", "Anthropic (Claude)")
-        .setValue(this.plugin.settings.provider)
-        .onChange(async (value) => {
-          this.plugin.settings.provider = value === "anthropic" ? "anthropic" : "openai";
-          await this.plugin.saveSettings();
-        }));
+    containerEl.createEl("h3", { text: "API keys" });
 
     new Setting(containerEl)
       .setName("OpenAI API key")
@@ -1285,15 +1377,6 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
-      .setName("OpenAI model")
-      .addText((text) => text
-        .setValue(this.plugin.settings.openaiModel)
-        .onChange(async (value) => {
-          this.plugin.settings.openaiModel = value.trim() || DEFAULT_SETTINGS.openaiModel;
-          await this.plugin.saveSettings();
-        }));
-
-    new Setting(containerEl)
       .setName("Anthropic API key")
       .setDesc("Stored in this plugin's Obsidian data.json.")
       .addText((text) => {
@@ -1307,16 +1390,35 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
           });
       });
 
+    containerEl.createEl("h3", { text: "Reading prep" });
+
     new Setting(containerEl)
-      .setName("Anthropic model")
-      .addText((text) => text
-        .setValue(this.plugin.settings.anthropicModel)
+      .setName("Reading prep provider")
+      .setDesc("Used for key-sentence highlighting plus term discovery and explanation after Markdown import.")
+      .addDropdown((dropdown) => dropdown
+        .addOption("openai", "OpenAI (GPT)")
+        .addOption("anthropic", "Anthropic (Claude)")
+        .setValue(this.plugin.settings.provider)
         .onChange(async (value) => {
-          this.plugin.settings.anthropicModel = value.trim() || DEFAULT_SETTINGS.anthropicModel;
+          this.plugin.settings.provider = value === "anthropic" ? "anthropic" : "openai";
           await this.plugin.saveSettings();
+          this.display();
         }));
 
-    containerEl.createEl("h3", { text: "Reading prep" });
+    new Setting(containerEl)
+      .setName("Reading prep model")
+      .setDesc("This can differ from the Markdown generation model above. One-click import and reading prep stays available either way.")
+      .addText((text) => text
+        .setPlaceholder(this.plugin.settings.provider === "anthropic" ? DEFAULT_SETTINGS.anthropicModel : DEFAULT_SETTINGS.openaiModel)
+        .setValue(getReadingModel(this.plugin.settings))
+        .onChange(async (value) => {
+          if (this.plugin.settings.provider === "anthropic") {
+            this.plugin.settings.anthropicModel = value.trim() || DEFAULT_SETTINGS.anthropicModel;
+          } else {
+            this.plugin.settings.openaiModel = value.trim() || DEFAULT_SETTINGS.openaiModel;
+          }
+          await this.plugin.saveSettings();
+        }));
 
     new Setting(containerEl)
       .setName("Auto highlight key sentences after import")
@@ -1365,10 +1467,10 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Glossary explanation length")
-      .setDesc("Controls newly generated glossary entries. Standard keeps the current contextual explanation; Brief stores a short meaning-only explanation. Rebuild glossary entries to refresh existing cache.")
+      .setDesc("Controls newly generated glossary entries. Standard stores a fuller contextual definition plus cluster notes; Concise stores a 30-50 word definition plus cluster notes. Rebuild glossary entries to refresh existing cache.")
       .addDropdown((dropdown) => dropdown
         .addOption("standard", "Standard (current)")
-        .addOption("brief", "Brief meaning only")
+        .addOption("brief", "Concise (30-50 words)")
         .setValue(this.plugin.settings.glossaryExplanationLength)
         .onChange(async (value) => {
           this.plugin.settings.glossaryExplanationLength = value === "brief" ? "brief" : "standard";
@@ -1387,164 +1489,6 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
   }
-}
-
-interface ExtractedPdfPage {
-  pageNumber: number;
-  text: string;
-  charCount: number;
-}
-
-interface ExtractedPdfText {
-  backend: "pdfjs";
-  extractedAt: string;
-  numPages: number;
-  totalChars: number;
-  pages: ExtractedPdfPage[];
-}
-
-async function extractPdfTextWithPdfJs(pdfAbsPath: string): Promise<ExtractedPdfText> {
-  const globalObject = globalThis as typeof globalThis & { pdfjsWorker?: unknown };
-  const previousPdfWorker = globalObject.pdfjsWorker;
-  const hadPdfWorker = Object.prototype.hasOwnProperty.call(globalObject, "pdfjsWorker");
-
-  try {
-    await import("pdfjs-dist/legacy/build/pdf.worker.mjs");
-    const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs") as {
-      getDocument: (options: Record<string, unknown>) => { promise: Promise<{
-        numPages: number;
-        getPage: (pageNumber: number) => Promise<{ getTextContent: () => Promise<{ items: unknown[] }> }>;
-        destroy?: () => Promise<void>;
-      }> };
-    };
-    const data = new Uint8Array(fs.readFileSync(pdfAbsPath));
-    const loadingTask = pdfjs.getDocument({
-      data,
-      useSystemFonts: true,
-      isEvalSupported: false
-    });
-    const pdf = await loadingTask.promise;
-    const pages: ExtractedPdfPage[] = [];
-
-    try {
-      for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
-        const page = await pdf.getPage(pageNumber);
-        const textContent = await page.getTextContent();
-        const text = textContentToPageText(textContent.items);
-        pages.push({
-          pageNumber,
-          text,
-          charCount: text.replace(/\s/g, "").length
-        });
-      }
-    } finally {
-      if (pdf.destroy) {
-        await pdf.destroy();
-      }
-    }
-
-    return {
-      backend: "pdfjs",
-      extractedAt: new Date().toISOString(),
-      numPages: pdf.numPages,
-      totalChars: pages.reduce((sum, page) => sum + page.charCount, 0),
-      pages
-    };
-  } finally {
-    if (hadPdfWorker) {
-      globalObject.pdfjsWorker = previousPdfWorker;
-    } else {
-      delete globalObject.pdfjsWorker;
-    }
-  }
-}
-
-function textContentToPageText(items: unknown[]): string {
-  const lines: string[] = [];
-  let currentLine = "";
-
-  for (const rawItem of items) {
-    const item = rawItem as { str?: unknown; hasEOL?: unknown };
-    const text = typeof item.str === "string" ? item.str.normalize("NFKC") : "";
-    if (text) {
-      currentLine += text;
-    }
-    if (item.hasEOL === true) {
-      lines.push(cleanPdfLine(currentLine));
-      currentLine = "";
-    }
-  }
-
-  if (currentLine.trim()) {
-    lines.push(cleanPdfLine(currentLine));
-  }
-
-  return collapseBlankLines(lines).join("\n");
-}
-
-function buildMarkdownFromExtractedPdfText(extracted: ExtractedPdfText, title: string): string {
-  const sections = [`# ${title}`];
-  for (const page of extracted.pages) {
-    const markdown = pageTextToMarkdown(page.text);
-    sections.push(`<!-- page: ${page.pageNumber} -->${markdown ? `\n\n${markdown}` : ""}`);
-  }
-  return `${sections.join("\n\n").trim()}\n`;
-}
-
-function pageTextToMarkdown(pageText: string): string {
-  const paragraphs: string[] = [];
-  let current = "";
-
-  const flush = () => {
-    const paragraph = current.trim();
-    if (paragraph) {
-      paragraphs.push(paragraph);
-    }
-    current = "";
-  };
-
-  for (const line of pageText.split(/\n/)) {
-    const cleaned = cleanPdfLine(line);
-    if (!cleaned) {
-      flush();
-      continue;
-    }
-
-    if (!current) {
-      current = cleaned;
-    } else if (current.endsWith("-") && !current.endsWith("--")) {
-      current = `${current.slice(0, -1)}${cleaned}`;
-    } else {
-      current = `${current} ${cleaned}`;
-    }
-  }
-
-  flush();
-  return paragraphs.join("\n\n");
-}
-
-function cleanPdfLine(line: string): string {
-  return line
-    .replace(/\u0000/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function collapseBlankLines(lines: string[]): string[] {
-  const output: string[] = [];
-  for (const line of lines) {
-    if (!line) {
-      if (output.length > 0 && output[output.length - 1] !== "") {
-        output.push("");
-      }
-      continue;
-    }
-    output.push(line);
-  }
-  while (output.length > 0 && output[output.length - 1] === "") {
-    output.pop();
-  }
-  return output;
 }
 
 function joinVaultPath(...parts: string[]): string {
@@ -1628,6 +1572,21 @@ function findLargestMarkdownFile(folder: string): string | null {
   visit(folder);
   return files
     .sort((a, b) => fs.statSync(b).size - fs.statSync(a).size)[0] || null;
+}
+
+function looksLikeLocalPath(command: string): boolean {
+  return command.includes(path.sep) || command.startsWith(`.${path.sep}`) || command.startsWith("~");
+}
+
+function getReadingModel(settings: PhilosophyReaderSettings): string {
+  if (settings.provider === "anthropic") {
+    return settings.anthropicModel.trim() || DEFAULT_SETTINGS.anthropicModel;
+  }
+  return settings.openaiModel.trim() || DEFAULT_SETTINGS.openaiModel;
+}
+
+function isOpenAIModel(model: string): boolean {
+  return /^(gpt-|o1-|o3-|o4-)/.test(String(model || "").trim());
 }
 
 function chunk<T>(items: T[], size: number): T[][] {

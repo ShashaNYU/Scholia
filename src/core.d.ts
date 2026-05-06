@@ -66,9 +66,7 @@ export interface GlossaryEntry {
   model: string;
   created: string;
   updated: string;
-  firstUse: string;
   definition: string;
-  authorUsage: string;
   clusters: ContextCluster[];
   sep_enabled?: boolean;
 }

@@ -6,7 +6,7 @@ import termDiscoveryPrompt from "../prompts/term-discovery.md";
 import { parseJsonFromText, parseLooseJsonFromText, type ContextCluster, type ParagraphWindow, type TermCandidate } from "./core.js";
 
 export type ProviderName = "openai" | "anthropic";
-export type PdfImportBackend = "pdfjs" | "scholar-md" | "marker";
+export type PdfImportBackend = "scholar-md" | "paper2md" | "marker";
 export type GlossaryExplanationLength = "standard" | "brief";
 export type KeySentenceDensity = "sparse" | "medium";
 
@@ -17,7 +17,9 @@ export interface PhilosophyReaderSettings {
   openaiModel: string;
   anthropicModel: string;
   pdfImportBackend: PdfImportBackend;
-  scholarMdCommand: string;
+  paper2mdCommand: string;
+  paper2mdModel: string;
+  paper2mdConcurrency: number;
   markerCommand: string;
   maxPrecomputedTerms: number;
   glossaryFolderName: string;
@@ -89,8 +91,6 @@ export interface ExplainedTerm {
   term: string;
   aliases: string[];
   definition: string;
-  authorUsage: string;
-  firstUse: string;
   clusters: ExplainedCluster[];
 }
 
@@ -395,22 +395,16 @@ function isEmptyObject(value: unknown): boolean {
 
 interface ExplanationPromptVariant {
   definitionRequirement: string;
-  authorUsageRequirement: string;
-  firstUseRequirement: string;
   clusterRequirement: string;
 }
 
 const explanationPromptVariants: Record<GlossaryExplanationLength, ExplanationPromptVariant> = {
   standard: {
     definitionRequirement: "Write a paper-level definition of about 80-120 words.",
-    authorUsageRequirement: "Explain how the author appears to use the term in this paper.",
-    firstUseRequirement: "If a first definition or first important use is visible in the supplied excerpts, identify it briefly.",
     clusterRequirement: "Write one short usage note for each supplied context cluster. The usage note should explain what the term is doing in that passage or section."
   },
   brief: {
-    definitionRequirement: "Write a brief definition of about 18-32 words that only explains the term's meaning in this paper.",
-    authorUsageRequirement: "Keep authorUsage empty unless the paper uses the term in a clearly unusual or contrastive way that is necessary to understand the meaning.",
-    firstUseRequirement: "Keep firstUse empty unless the supplied context shows an explicit first definition that is necessary to understand the term.",
+    definitionRequirement: "Write a concise definition of about 30-50 words that only explains the term's meaning in this paper.",
     clusterRequirement: "For each supplied context cluster, leave usageNote empty unless that passage materially changes the meaning; if needed, keep it to one very short sentence."
   }
 };
@@ -427,8 +421,6 @@ function renderExplanationPrompt(template: string, explanationLength: GlossaryEx
   const variant = explanationPromptVariants[explanationLength] || explanationPromptVariants.standard;
   return template
     .replace("{{DEFINITION_REQUIREMENT}}", variant.definitionRequirement)
-    .replace("{{AUTHOR_USAGE_REQUIREMENT}}", variant.authorUsageRequirement)
-    .replace("{{FIRST_USE_REQUIREMENT}}", variant.firstUseRequirement)
     .replace("{{CLUSTER_REQUIREMENT}}", variant.clusterRequirement);
 }
 
@@ -472,11 +464,9 @@ const explainedTermSchema: JsonSchema = {
     term: { type: "string" },
     aliases: { type: "array", items: { type: "string" } },
     definition: { type: "string" },
-    authorUsage: { type: "string" },
-    firstUse: { type: "string" },
     clusters: { type: "array", items: explainedClusterSchema }
   },
-  required: ["term", "aliases", "definition", "authorUsage", "firstUse", "clusters"]
+  required: ["term", "aliases", "definition", "clusters"]
 };
 
 const selectedKeySentenceSchema: JsonSchema = {

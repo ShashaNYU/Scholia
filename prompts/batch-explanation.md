@@ -4,8 +4,6 @@ The user will read the paper in Obsidian. Your job is to explain each selected t
 
 For each term:
 - {{DEFINITION_REQUIREMENT}}
-- {{AUTHOR_USAGE_REQUIREMENT}}
-- {{FIRST_USE_REQUIREMENT}}
 - {{CLUSTER_REQUIREMENT}}
 - Do not mention SEP. SEP integration is disabled in this MVP.
 - Do not invent certainty. If the context is insufficient, say so briefly.
@@ -18,8 +16,6 @@ Return JSON only:
       "term": "canonical term",
       "aliases": ["aliases"],
       "definition": "definition grounded in the paper",
-      "authorUsage": "one sentence about the author's usage",
-      "firstUse": "first definition/use if supported, otherwise empty string",
       "clusters": [
         {
           "id": "cluster id from input",

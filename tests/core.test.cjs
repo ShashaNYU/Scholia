@@ -163,9 +163,7 @@ test("glossary markdown round-trips cache metadata", () => {
     model: "gpt-5.4-mini",
     created: "2026-01-01T00:00:00.000Z",
     updated: "2026-01-01T00:00:00.000Z",
-    firstUse: "Introduced in the opening section.",
     definition: "A context-aware definition.",
-    authorUsage: "The author uses it as a local contrast class.",
     clusters: [{
       id: "cluster-1",
       label: "First",
@@ -181,6 +179,50 @@ test("glossary markdown round-trips cache metadata", () => {
   assert.equal(parsed.term, "Transcendental Idealism");
   assert.equal(parsed.definition, "A context-aware definition.");
   assert.equal(parsed.clusters[0].usageNote, "It frames the local argument.");
+});
+
+test("legacy glossary markdown still parses without exposing removed fields", () => {
+  const markdown = `---
+term: "Transcendental Idealism"
+normalizedTerm: "transcendental idealism"
+aliases: ["TI"]
+sourcePaper: "paper/example.md"
+provider: "openai"
+model: "gpt-5.4-mini"
+created: "2026-01-01T00:00:00.000Z"
+updated: "2026-01-01T00:00:00.000Z"
+firstUse: "Introduced in the opening section."
+definition: "A context-aware definition."
+authorUsage: "The author uses it as a local contrast class."
+sep_enabled: false
+clusters: [{"id":"cluster-1","label":"First","paragraphIndexes":[0],"startOffset":10,"endOffset":80,"excerpt":"Excerpt","usageNote":"It frames the local argument."}]
+---
+
+# Transcendental Idealism
+
+A context-aware definition.
+
+## Author usage
+
+The author uses it as a local contrast class.
+
+## First use
+
+Introduced in the opening section.
+
+## Usage notes
+
+### First
+
+It frames the local argument.
+`;
+
+  const parsed = parseGlossaryMarkdown(markdown);
+  assert.equal(parsed.term, "Transcendental Idealism");
+  assert.equal(parsed.definition, "A context-aware definition.");
+  assert.equal(parsed.clusters[0].usageNote, "It frames the local argument.");
+  assert.equal("authorUsage" in parsed, false);
+  assert.equal("firstUse" in parsed, false);
 });
 
 test("applySentenceHighlights is idempotent for the same sentence", () => {
@@ -222,9 +264,7 @@ test("findPreparedTermAtPosition prefers longest matching term", () => {
     model: "gpt-5.4-mini",
     created: "",
     updated: "",
-    firstUse: "",
     definition: "Definition",
-    authorUsage: "",
     clusters: []
   }));
   const line = "Kant's transcendental idealism matters here.";
@@ -253,12 +293,12 @@ test("parseLooseJsonFromText repairs bare quotes inside string values", () => {
   const parsed = parseLooseJsonFromText(`[
     {
       "term": "metalinguistic negotiation",
-      "firstUse": "The paper describes a "metalinguistic" use of a term.",
+      "definition": "The paper describes a "metalinguistic" use of a term.",
       "clusters": []
     }
   ]`);
 
-  assert.equal(parsed[0].firstUse, "The paper describes a \"metalinguistic\" use of a term.");
+  assert.equal(parsed[0].definition, "The paper describes a \"metalinguistic\" use of a term.");
 });
 
 test("findWordAtPosition ignores short words", () => {
