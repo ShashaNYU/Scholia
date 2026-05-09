@@ -8,17 +8,17 @@ The main entrypoint is Obsidian's Command Palette:
 
 1. Open Obsidian.
 2. Press `Cmd+P` on macOS or `Ctrl+P` on Windows/Linux.
-3. Type `Scholia`.
+3. Type part of the action name, such as `Import`, `Glossary`, or `Explain`.
 4. Pick the action you want.
 
 The most important commands are:
 
-- `Scholia: Import PDF and Prepare for Reading`
-- `Scholia: Convert Current PDF to Markdown Only`
-- `Scholia: Rebuild Glossary for Current Paper`
-- `Scholia: Extract Terms and Explain from Current Markdown`
-- `Scholia: Highlight Key Sentences for Current Paper`
-- `Scholia: Explain Term Now`
+- `Import PDF and Prepare for Reading`
+- `Convert Current PDF to Markdown Only`
+- `Rebuild Glossary for Current Paper`
+- `Extract Terms and Explain from Current Markdown`
+- `Highlight Key Sentences for Current Paper`
+- `Explain Term Now`
 
 If you just want the normal workflow, use:
 
@@ -138,8 +138,8 @@ Then the normal usage pattern is:
 
 1. Open a PDF in your vault.
 2. Press `Cmd+P` or `Ctrl+P`.
-3. Type `Scholia`.
-4. Choose `Scholia: Import PDF and Prepare for Reading`.
+3. Type `Import`.
+4. Choose `Import PDF and Prepare for Reading`.
 5. Open the generated Markdown note and hover on prepared terms.
 
 If you are actively developing, use:
@@ -273,7 +273,7 @@ Glossary entries are written as Markdown files inside the paper folder, not hidd
 ### One-click reading prep
 
 1. Open a PDF in Obsidian.
-2. Press `Cmd+P` or `Ctrl+P`, type `Scholia`, and run `Scholia: Import PDF and Prepare for Reading`.
+2. Press `Cmd+P` or `Ctrl+P`, type `Import`, and run `Import PDF and Prepare for Reading`.
 3. Wait for background preprocessing to finish.
 4. Open the generated Markdown note.
 5. Hover over prepared terms to read cached explanations.
@@ -281,14 +281,14 @@ Glossary entries are written as Markdown files inside the paper folder, not hidd
 ### Markdown-only import
 
 1. Open a PDF.
-2. Press `Cmd+P` or `Ctrl+P`, type `Scholia`, and run `Scholia: Convert Current PDF to Markdown Only`.
+2. Press `Cmd+P` or `Ctrl+P`, type `Convert`, and run `Convert Current PDF to Markdown Only`.
 3. Inspect the note and `_source/import-warnings.md`.
-4. Run `Scholia: Extract Terms and Explain from Current Markdown` when ready.
+4. Run `Extract Terms and Explain from Current Markdown` when ready.
 
 ### Manual term explanation
 
 1. Select a term in a Markdown note.
-2. Press `Cmd+P` or `Ctrl+P`, type `Scholia`, and run `Scholia: Explain Term Now`.
+2. Press `Cmd+P` or `Ctrl+P`, type `Explain`, and run `Explain Term Now`.
 3. The plugin writes a glossary note and future hovers use the cached result.
 
 ## Key sentence highlighting

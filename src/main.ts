@@ -167,7 +167,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
 
     this.addCommand({
       id: "import-pdf-as-philosophy-paper",
-      name: "Scholia: Import PDF and Prepare for Reading",
+      name: "Import PDF and Prepare for Reading",
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
         const canRun = file instanceof TFile && file.extension.toLowerCase() === "pdf";
@@ -183,7 +183,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
 
     this.addCommand({
       id: "convert-current-pdf-to-markdown",
-      name: "Scholia: Convert Current PDF to Markdown Only",
+      name: "Convert Current PDF to Markdown Only",
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
         const canRun = file instanceof TFile && file.extension.toLowerCase() === "pdf";
@@ -199,7 +199,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
 
     this.addCommand({
       id: "rebuild-glossary-for-current-paper",
-      name: "Scholia: Rebuild Glossary for Current Paper",
+      name: "Rebuild Glossary for Current Paper",
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
         const canRun = file instanceof TFile && file.extension.toLowerCase() === "md";
@@ -215,7 +215,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
 
     this.addCommand({
       id: "extract-terms-and-explain-current-markdown",
-      name: "Scholia: Extract Terms and Explain from Current Markdown",
+      name: "Extract Terms and Explain from Current Markdown",
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
         const canRun = file instanceof TFile && file.extension.toLowerCase() === "md";
@@ -231,7 +231,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
 
     this.addCommand({
       id: "enrich-glossary-with-sep-for-current-paper",
-      name: "Scholia: Enrich Glossary with SEP for Current Paper",
+      name: "Enrich Glossary with SEP for Current Paper",
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
         const canRun = file instanceof TFile && file.extension.toLowerCase() === "md";
@@ -247,7 +247,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
 
     this.addCommand({
       id: "highlight-key-sentences-for-current-paper",
-      name: "Scholia: Highlight Key Sentences for Current Paper",
+      name: "Highlight Key Sentences for Current Paper",
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
         const canRun = file instanceof TFile && file.extension.toLowerCase() === "md";
@@ -263,7 +263,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
 
     this.addCommand({
       id: "explain-term-now",
-      name: "Scholia: Explain Term Now",
+      name: "Explain Term Now",
       editorCheckCallback: (checking, editor, view) => {
         const file = view.file;
         const selection = editor.getSelection().trim();
