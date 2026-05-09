@@ -3,7 +3,7 @@
 This package is intended to be published independently from the Scholia
 Obsidian plugin.
 
-## Before first release
+## Before each release
 
 1. Confirm the package name `paper2mdviallm` is available on PyPI.
 2. Review the dependency licensing, especially `PyMuPDF`.

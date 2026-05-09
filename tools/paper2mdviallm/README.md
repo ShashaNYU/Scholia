@@ -8,7 +8,7 @@ it can also be installed and run on its own.
 
 ## Install
 
-When `paper2mdviallm` is published to PyPI, install it into a dedicated environment:
+Install `paper2mdviallm` from PyPI into a dedicated environment:
 
 ```sh
 conda create -n scholia python=3.11

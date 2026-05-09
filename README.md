@@ -152,7 +152,7 @@ npm run dev
 
 ### Paper2MDViaLLM
 
-Recommended user flow after `paper2mdviallm` is published as a Python package:
+Recommended user flow with the published `paper2mdviallm` package:
 
 ```sh
 conda create -n scholia python=3.11
