@@ -1,4 +1,6 @@
-const { normalizeTerm } = require("./core.js");
+import core from "./core.js";
+
+const { normalizeTerm } = core;
 
 const SEP_SEARCH_ENDPOINT = "https://plato.stanford.edu/searcher.py";
 const SEP_ENTRY_SUFFIX = /^https:\/\/plato\.stanford\.edu\/entries\/.+\/$/;
@@ -6,9 +8,17 @@ const SEP_RESULT_LIMIT = 5;
 const SEP_DISAMBIGUATION_LIMIT = 3;
 const SEP_CLEAR_SCORE = 90;
 const SEP_CLEAR_SCORE_GAP = 15;
+let requestUrlFn = null;
+
+async function loadRequestUrl() {
+  if (!requestUrlFn) {
+    ({ requestUrl: requestUrlFn } = await import("obsidian"));
+  }
+  return requestUrlFn;
+}
 
 async function requestSepText(url) {
-  const { requestUrl } = require("obsidian");
+  const requestUrl = await loadRequestUrl();
   const response = await requestUrl({
     url,
     method: "GET",
@@ -201,7 +211,7 @@ function safeCodePoint(value) {
   }
   try {
     return String.fromCodePoint(value);
-  } catch (_) {
+  } catch {
     return "";
   }
 }
@@ -222,7 +232,7 @@ function canonicalizeSepUrl(resultUrl, titleHref) {
     if (entry && /^\/entries\/.+\/$/.test(entry)) {
       return `https://plato.stanford.edu${entry}`;
     }
-  } catch (_) {
+  } catch {
     return "";
   }
 
@@ -238,7 +248,7 @@ function sanitizeSepUrl(value) {
     const url = new URL(raw);
     const normalized = `${url.origin}${url.pathname}`;
     return SEP_ENTRY_SUFFIX.test(normalized) ? normalized : "";
-  } catch (_) {
+  } catch {
     return "";
   }
 }
@@ -263,7 +273,7 @@ function urlSlug(url) {
       .replace(/^\/+|\/+$/g, "")
       .replace(/^entries\//, "")
       .replace(/\//g, " ");
-  } catch (_) {
+  } catch {
     return "";
   }
 }
@@ -273,7 +283,7 @@ function firstCapture(text, pattern, index) {
   return match ? String(match[index] || "") : "";
 }
 
-module.exports = {
+export {
   fetchSepEntry,
   parseSepEntryHtml,
   parseSepSearchResults,

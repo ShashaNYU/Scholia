@@ -141,6 +141,7 @@ export interface LLMProvider {
 }
 
 type JsonSchema = Record<string, unknown>;
+type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 
 abstract class BaseProvider implements LLMProvider {
   protected readonly explanationLength: GlossaryExplanationLength;
@@ -461,12 +462,12 @@ function extractAnthropicText(json: unknown): string {
   return text;
 }
 
-function extractAnthropicToolInput(json: unknown): unknown | null {
+function extractAnthropicToolInput(json: unknown): JsonValue | null {
   const response = json as {
-    content?: Array<{ type?: string; name?: string; input?: unknown }>;
+    content?: Array<{ type?: string; name?: string; input?: JsonValue }>;
   };
   const toolUse = (response.content || []).find((item) => item.type === "tool_use" && item.name === "return_json");
-  return toolUse && typeof toolUse === "object" && "input" in toolUse ? toolUse.input : null;
+  return toolUse && toolUse.input !== undefined ? toolUse.input : null;
 }
 
 function isEmptyObject(value: unknown): boolean {

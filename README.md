@@ -13,12 +13,12 @@ The main entrypoint is Obsidian's Command Palette:
 
 The most important commands are:
 
-- `Import PDF and Prepare for Reading`
-- `Convert Current PDF to Markdown Only`
-- `Rebuild Glossary for Current Paper`
-- `Extract Terms and Explain from Current Markdown`
-- `Highlight Key Sentences for Current Paper`
-- `Explain Term Now`
+- `Import PDF and prepare for reading`
+- `Convert current PDF to Markdown only`
+- `Rebuild glossary for current paper`
+- `Extract terms and explain from current Markdown`
+- `Highlight key sentences for current paper`
+- `Explain term now`
 
 If you just want the normal workflow, use:
 
@@ -111,7 +111,7 @@ Notes:
 
 ## Disclosures
 
-- `Scholia` makes network requests to OpenAI and/or Anthropic when you run import, glossary generation, key-sentence selection, or `Explain Term Now`.
+- `Scholia` makes network requests to OpenAI and/or Anthropic when you run import, glossary generation, key-sentence selection, or `Explain term now`.
 - SEP enrichment, when enabled, also fetches public Stanford Encyclopedia of Philosophy pages.
 - The plugin reads PDFs and Markdown files from your vault and writes derived artifacts such as Markdown notes, `_source/*`, and `_glossary/*` back into the same vault.
 - The plugin can execute user-configured local tools such as `paper2mdviallm`, `scholar-md`, or `marker_single`.
@@ -139,7 +139,7 @@ Then the normal usage pattern is:
 1. Open a PDF in your vault.
 2. Press `Cmd+P` or `Ctrl+P`.
 3. Type `Import`.
-4. Choose `Import PDF and Prepare for Reading`.
+4. Choose `Import PDF and prepare for reading`.
 5. Open the generated Markdown note and hover on prepared terms.
 
 If you are actively developing, use:
@@ -160,7 +160,7 @@ conda activate scholia
 pip install paper2mdviallm
 ```
 
-Then in `Settings -> Community plugins -> Scholia -> Paper2MDViaLLM CLI path`, set either:
+Then in `Settings -> Community plugins -> Scholia -> CLI path for paper2mdviallm`, set either:
 
 - the full executable path, such as `/Users/me/miniconda3/envs/scholia/bin/paper2mdviallm`, or
 - the environment root, such as `/Users/me/miniconda3/envs/scholia`
@@ -182,7 +182,7 @@ That installs the local development CLI at:
 You can then either:
 
 - leave the CLI path as `paper2mdviallm` and let Scholia resolve it from `PATH`,
-- click `Use local Paper2MDViaLLM`, or
+- click `Use local paper2mdviallm`, or
 - paste the full path manually.
 
 Conda environments work too. You can point Scholia at either:
@@ -236,17 +236,17 @@ The settings tab is split into four groups.
 ### Markdown generation
 
 - `PDF import backend`
-- `Paper2MDViaLLM CLI path`
+- `CLI path for paper2mdviallm`
 - `Markdown generation model`
-- `Paper2MDViaLLM concurrency`
-- `Marker CLI path`
+- `Concurrency for paper2mdviallm`
+- `CLI path for Marker`
 
 For `Paper2MDViaLLM`, provider choice is inferred from the model name. The plugin injects the global OpenAI or Anthropic API key into the CLI environment. The CLI path can be a plain executable name, a direct executable path, or a conda/venv root.
 
 ### API keys
 
-- `OpenAI API key`
-- `Anthropic API key`
+- `OpenAI key`
+- `Anthropic key`
 
 These are currently stored in the plugin's Obsidian `data.json` for compatibility with older supported Obsidian versions.
 
@@ -273,7 +273,7 @@ Glossary entries are written as Markdown files inside the paper folder, not hidd
 ### One-click reading prep
 
 1. Open a PDF in Obsidian.
-2. Press `Cmd+P` or `Ctrl+P`, type `Import`, and run `Import PDF and Prepare for Reading`.
+2. Press `Cmd+P` or `Ctrl+P`, type `Import`, and run `Import PDF and prepare for reading`.
 3. Wait for background preprocessing to finish.
 4. Open the generated Markdown note.
 5. Hover over prepared terms to read cached explanations.
@@ -281,14 +281,14 @@ Glossary entries are written as Markdown files inside the paper folder, not hidd
 ### Markdown-only import
 
 1. Open a PDF.
-2. Press `Cmd+P` or `Ctrl+P`, type `Convert`, and run `Convert Current PDF to Markdown Only`.
+2. Press `Cmd+P` or `Ctrl+P`, type `Convert`, and run `Convert current PDF to Markdown only`.
 3. Inspect the note and `_source/import-warnings.md`.
-4. Run `Extract Terms and Explain from Current Markdown` when ready.
+4. Run `Extract terms and explain from current Markdown` when ready.
 
 ### Manual term explanation
 
 1. Select a term in a Markdown note.
-2. Press `Cmd+P` or `Ctrl+P`, type `Explain`, and run `Explain Term Now`.
+2. Press `Cmd+P` or `Ctrl+P`, type `Explain`, and run `Explain term now`.
 3. The plugin writes a glossary note and future hovers use the cached result.
 
 ## Key sentence highlighting

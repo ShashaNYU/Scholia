@@ -1,14 +1,17 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const {
-  parseSepEntryHtml,
-  parseSepSearchResults,
-  pickSepCandidateHeuristically,
-  stripHtml
-} = require("../src/sep.js");
+let sepModulePromise;
 
-test("parseSepSearchResults extracts titles, urls, and snippets", () => {
+function loadSepModule() {
+  if (!sepModulePromise) {
+    sepModulePromise = import("../src/sep.js");
+  }
+  return sepModulePromise;
+}
+
+test("parseSepSearchResults extracts titles, urls, and snippets", async () => {
+  const { parseSepSearchResults } = await loadSepModule();
   const html = `
   <div class="result_listing">
     <div class="result_title"><a class="l" href="https://plato.stanford.edu/search/r?entry=/entries/knowledge-analysis/">The Analysis of <b>Knowledge</b></a></div><!-- end result_title -->
@@ -24,7 +27,8 @@ test("parseSepSearchResults extracts titles, urls, and snippets", () => {
   assert.equal(results[0].snippet, "A classic SEP entry about knowledge.");
 });
 
-test("parseSepEntryHtml extracts preamble paragraphs and revision metadata", () => {
+test("parseSepEntryHtml extracts preamble paragraphs and revision metadata", async () => {
+  const { parseSepEntryHtml } = await loadSepModule();
   const html = `
   <meta name="DCTERMS.modified" content="2026-01-21" />
   <h1>The Analysis of Knowledge</h1>
@@ -43,7 +47,8 @@ test("parseSepEntryHtml extracts preamble paragraphs and revision metadata", () 
   assert.equal(entry.sourceUrl, "https://plato.stanford.edu/entries/knowledge-analysis/");
 });
 
-test("pickSepCandidateHeuristically prefers exact title matches", () => {
+test("pickSepCandidateHeuristically prefers exact title matches", async () => {
+  const { pickSepCandidateHeuristically } = await loadSepModule();
   const results = [
     {
       title: "Moral Luck",
@@ -64,7 +69,8 @@ test("pickSepCandidateHeuristically prefers exact title matches", () => {
   assert.equal(picked.candidate.score >= 120, true);
 });
 
-test("stripHtml decodes entities and removes markup", () => {
+test("stripHtml decodes entities and removes markup", async () => {
+  const { stripHtml } = await loadSepModule();
   const text = stripHtml("<p>&ldquo;Knowledge&rdquo; &amp; justification&nbsp;matter.</p>");
   assert.equal(text, "“Knowledge” & justification matter.");
 });

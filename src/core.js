@@ -554,7 +554,7 @@ function parseJsonFromText(text) {
   const candidate = jsonCandidateFromText(text);
   try {
     return JSON.parse(candidate);
-  } catch (_) {
+  } catch {
     const objectStart = candidate.indexOf("{");
     const objectEnd = candidate.lastIndexOf("}");
     if (objectStart !== -1 && objectEnd > objectStart) {
@@ -576,7 +576,7 @@ function parseLooseJsonFromText(text) {
     const repaired = escapeBareQuotesInJsonStrings(jsonCandidateFromText(text));
     try {
       return JSON.parse(repaired);
-    } catch (_) {
+    } catch {
       throw error;
     }
   }
@@ -658,7 +658,7 @@ function parseYamlScalar(value) {
   if (trimmed.startsWith("[") || trimmed.startsWith("{") || trimmed.startsWith("\"")) {
     try {
       return JSON.parse(trimmed);
-    } catch (_) {
+    } catch {
       return trimmed.replace(/^"|"$/g, "");
     }
   }
@@ -844,7 +844,8 @@ function findWordAtPosition(lineText, position) {
 function analyzeMarkdownQuality(markdown) {
   const text = String(markdown || "");
   const lines = text.split(/\r?\n/);
-  const controlChars = (text.match(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g) || []).length;
+  const controlCharPattern = new RegExp("[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F]", "g");
+  const controlChars = (text.match(controlCharPattern) || []).length;
   const mojibakeMarks = (text.match(/(?:â.|Ã.|Â.|ð|Ñ|ă|ĺ|ď|§|¶)/g) || []).length;
   const replacementChars = (text.match(/\uFFFD/g) || []).length;
   const cidRefs = (text.match(/\(cid:\d+\)/g) || []).length;

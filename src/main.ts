@@ -6,7 +6,6 @@ import { EditorView, hoverTooltip, type Tooltip } from "@codemirror/view";
 import {
   App,
   FileSystemAdapter,
-  MarkdownView,
   Notice,
   Plugin,
   PluginSettingTab,
@@ -167,7 +166,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
 
     this.addCommand({
       id: "import-pdf-as-philosophy-paper",
-      name: "Import PDF and Prepare for Reading",
+      name: "Import PDF and prepare for reading",
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
         const canRun = file instanceof TFile && file.extension.toLowerCase() === "pdf";
@@ -183,7 +182,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
 
     this.addCommand({
       id: "convert-current-pdf-to-markdown",
-      name: "Convert Current PDF to Markdown Only",
+      name: "Convert current PDF to Markdown only",
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
         const canRun = file instanceof TFile && file.extension.toLowerCase() === "pdf";
@@ -199,7 +198,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
 
     this.addCommand({
       id: "rebuild-glossary-for-current-paper",
-      name: "Rebuild Glossary for Current Paper",
+      name: "Rebuild glossary for current paper",
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
         const canRun = file instanceof TFile && file.extension.toLowerCase() === "md";
@@ -215,7 +214,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
 
     this.addCommand({
       id: "extract-terms-and-explain-current-markdown",
-      name: "Extract Terms and Explain from Current Markdown",
+      name: "Extract terms and explain from current Markdown",
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
         const canRun = file instanceof TFile && file.extension.toLowerCase() === "md";
@@ -231,7 +230,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
 
     this.addCommand({
       id: "enrich-glossary-with-sep-for-current-paper",
-      name: "Enrich Glossary with SEP for Current Paper",
+      name: "Enrich glossary with SEP for current paper",
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
         const canRun = file instanceof TFile && file.extension.toLowerCase() === "md";
@@ -247,7 +246,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
 
     this.addCommand({
       id: "highlight-key-sentences-for-current-paper",
-      name: "Highlight Key Sentences for Current Paper",
+      name: "Highlight key sentences for current paper",
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
         const canRun = file instanceof TFile && file.extension.toLowerCase() === "md";
@@ -263,7 +262,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
 
     this.addCommand({
       id: "explain-term-now",
-      name: "Explain Term Now",
+      name: "Explain term now",
       editorCheckCallback: (checking, editor, view) => {
         const file = view.file;
         const selection = editor.getSelection().trim();
@@ -417,14 +416,14 @@ export default class PhilosophyReaderPlugin extends Plugin {
       const extension = abstractFile.extension.toLowerCase();
       if (extension === "pdf") {
         menu.addItem((item) => item
-          .setTitle("Import PDF and Prepare for Reading")
+          .setTitle("Import PDF and prepare for reading")
           .setIcon("sparkles")
           .onClick(() => {
             void this.importPdfAsPaper(abstractFile, { precomputeGlossary: true });
           }));
 
         menu.addItem((item) => item
-          .setTitle("Convert PDF to Markdown Only")
+          .setTitle("Convert PDF to Markdown only")
           .setIcon("file-text")
           .onClick(() => {
             void this.importPdfAsPaper(abstractFile, { precomputeGlossary: false });
@@ -433,21 +432,21 @@ export default class PhilosophyReaderPlugin extends Plugin {
 
       if (extension === "md") {
         menu.addItem((item) => item
-          .setTitle("Highlight Key Sentences")
+          .setTitle("Highlight key sentences")
           .setIcon("highlighter")
           .onClick(() => {
             void this.highlightKeySentences(abstractFile, { background: false });
           }));
 
         menu.addItem((item) => item
-          .setTitle("Extract Terms and Explain")
+          .setTitle("Extract terms and explain")
           .setIcon("brain")
           .onClick(() => {
             void this.extractTermsAndExplain(abstractFile);
           }));
 
         menu.addItem((item) => item
-          .setTitle("Enrich Glossary with SEP")
+          .setTitle("Enrich glossary with SEP")
           .setIcon("book-open")
           .onClick(() => {
             void this.enrichGlossaryWithSepForPaper(abstractFile, { background: false });
@@ -566,7 +565,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
     try {
       const precomputeGlossary = options.precomputeGlossary !== false;
       if (this.settings.pdfImportBackend === "marker" && !this.settings.markerCommand.trim()) {
-        new Notice("Set the Marker CLI path in Scholia settings first.");
+        new Notice("Set the Marker CLI path in settings first.");
         return;
       }
       const scholarMdCommand = this.resolveScholarMdCommand();
@@ -635,7 +634,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
             void this.rebuildGlossary(markdownFile, { background: true });
           }
         } else {
-          new Notice("PDF converted to Markdown. Run 'Extract Terms and Explain from Current Markdown' when you are ready.");
+          new Notice("PDF converted to Markdown. Run 'Extract terms and explain from current Markdown' when you are ready.");
         }
       }
     } catch (error) {
@@ -664,7 +663,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
       throw new Error("Paper2MDViaLLM is configured with an Anthropic model, but the Anthropic API key is empty.");
     }
 
-    this.setStatus("Scholia: converting PDF with Paper2MDViaLLM...");
+    this.setStatus("Converting PDF with paper2mdviallm...");
     const commandLabel = resolvedCommand.source === "local" ? "local Paper2MDViaLLM" : "Paper2MDViaLLM";
     new Notice(`Converting PDF with ${commandLabel}...`);
 
@@ -745,7 +744,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
     adapter: FileSystemAdapter,
     resolvedCommand: ResolvedCommand
   ): Promise<string> {
-    this.setStatus("Scholia: converting PDF with Scholar-MD...");
+    this.setStatus("Converting PDF with scholar-md...");
     const commandLabel = resolvedCommand.source === "local" ? "local Scholar-MD" : "Scholar-MD";
     new Notice(`Converting PDF with ${commandLabel} (beta)...`);
 
@@ -817,7 +816,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
   }
 
   private async convertPdfWithMarker(pdfAbsPath: string, paperFolder: string, adapter: FileSystemAdapter): Promise<string> {
-    this.setStatus("Scholia: converting PDF with Marker...");
+    this.setStatus("Converting PDF with Marker...");
     new Notice("Converting PDF with Marker...");
     const outputDir = path.join(adapter.getFullPath(paperFolder), ".marker-output");
     if (fs.existsSync(outputDir)) {
@@ -913,7 +912,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
         const rangeStart = processed + 1;
         const rangeEnd = processed + batch.length;
         processed += batch.length;
-        this.setStatus(`Scholia: selecting key sentences ${rangeStart}-${rangeEnd}/${candidates.length}`);
+        this.setStatus(`Selecting key sentences ${rangeStart}-${rangeEnd}/${candidates.length}`);
 
         const selections = await provider.selectKeySentences({
           paperTitle: getBaseName(file.path),
@@ -994,7 +993,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
       const discovered: TermCandidate[] = [];
 
       for (let index = 0; index < windows.length; index += 1) {
-        this.setStatus(`Scholia: discovering terms ${index + 1}/${windows.length}`);
+        this.setStatus(`Discovering terms ${index + 1}/${windows.length}`);
         const terms = await provider.discoverTerms({
           paperTitle: getBaseName(file.path),
           sourcePaper: file.path,
@@ -1029,7 +1028,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
       const writtenTerms = new Set<string>();
 
       for (const batch of batches) {
-        this.setStatus(`Scholia: explaining terms ${completed + 1}-${completed + batch.length}/${inputs.length}`);
+        this.setStatus(`Explaining terms ${completed + 1}-${completed + batch.length}/${inputs.length}`);
         const explanations = await provider.explainTerms({
           paperTitle: getBaseName(file.path),
           sourcePaper: file.path,
@@ -1170,7 +1169,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
       }
       new Notice(buildPreparedTermNotice(explanation.term || selectedTerm, sepSummary));
     } catch (error) {
-      new Notice(`Explain Term Now failed: ${toErrorMessage(error)}`);
+      new Notice(`Explain term now failed: ${toErrorMessage(error)}`);
       console.error(error);
     }
   }
@@ -1224,7 +1223,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
       for (let index = 0; index < targets.length; index += 1) {
         const target = targets[index];
         summary.attempted += 1;
-        this.setStatus(`Scholia: enriching glossary with SEP ${index + 1}/${targets.length}`);
+        this.setStatus(`Enriching glossary with SEP ${index + 1}/${targets.length}`);
 
         try {
           const sep = await this.buildSepDataForEntry(file, target, provider);
@@ -1595,7 +1594,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
     return joinVaultPath(this.sourceFolderPath(file), "key-sentences.json");
   }
 
-  private async uniqueFolderPath(basePath: string): Promise<string> {
+  private uniqueFolderPath(basePath: string): string {
     let candidate = basePath;
     let index = 2;
     while (this.app.vault.getAbstractFileByPath(candidate)) {
@@ -1605,7 +1604,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
     return candidate;
   }
 
-  private async uniqueVaultPath(basePath: string): Promise<string> {
+  private uniqueVaultPath(basePath: string): string {
     const extensionIndex = basePath.lastIndexOf(".");
     const prefix = extensionIndex === -1 ? basePath : basePath.slice(0, extensionIndex);
     const extension = extensionIndex === -1 ? "" : basePath.slice(extensionIndex);
@@ -1654,10 +1653,7 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-
-    new Setting(containerEl)
-      .setName("Scholia")
-      .setHeading();
+    containerEl.createEl("h2", { text: "Settings" });
 
     new Setting(containerEl)
       .setName("Markdown generation")
@@ -1665,10 +1661,10 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("PDF import backend")
-      .setDesc("Paper2MDViaLLM is now the default path. Scholar-MD stays available as a lighter beta path; Marker remains optional and not recommended.")
+      .setDesc("paper2mdviallm is the default path. scholar-md stays available as a lighter beta path. Marker remains optional and not recommended.")
       .addDropdown((dropdown) => dropdown
-        .addOption("paper2mdviallm", "Paper2MDViaLLM")
-        .addOption("scholar-md", "Scholar-MD (beta)")
+        .addOption("paper2mdviallm", "paper2mdviallm (default)")
+        .addOption("scholar-md", "scholar-md (beta)")
         .addOption("marker", "Marker CLI (not recommended)")
         .setValue(this.plugin.settings.pdfImportBackend)
         .onChange(async (value) => {
@@ -1682,8 +1678,8 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
         }));
 
     new Setting(containerEl)
-      .setName("Paper2MDViaLLM CLI path")
-      .setDesc("Optional. Resolution order: explicit setting, plugin .venv local tool, then shell PATH. You can paste either the executable itself or an environment root such as a conda env; Scholia will resolve `bin/paper2mdviallm` or `Scripts/paper2mdviallm.exe` inside it.")
+      .setName("CLI path for paper2mdviallm")
+      .setDesc("Optional. Resolution order: explicit setting, plugin .venv local tool, then shell PATH. You can paste either the executable itself or an environment root such as a conda env. The plugin resolves `bin/paper2mdviallm` or `Scripts/paper2mdviallm.exe` inside it.")
       .addText((text) => text
         .setPlaceholder("paper2mdviallm")
         .setValue(this.plugin.settings.paper2mdviallmCommand)
@@ -1692,7 +1688,7 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }))
       .addButton((button) => button
-        .setButtonText("Use local Paper2MDViaLLM")
+        .setButtonText("Use local paper2mdviallm")
         .onClick(async () => {
           const localCommand = this.plugin.getLocalPaper2mdViaLlmCommand();
           if (!localCommand || !fs.existsSync(localCommand)) {
@@ -1702,12 +1698,12 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
           this.plugin.settings.paper2mdviallmCommand = localCommand;
           await this.plugin.saveSettings();
           this.display();
-          new Notice("Paper2MDViaLLM CLI path set to local paper2mdviallm.");
+          new Notice("CLI path for paper2mdviallm set to the local tool.");
         }));
 
     new Setting(containerEl)
       .setName("Markdown generation model")
-      .setDesc("Used by Paper2MDViaLLM. Provider is inferred from the model name, so API keys stay global and only need to be filled once.")
+      .setDesc("Used by paper2mdviallm. The provider is inferred from the model name, so API keys stay global and only need to be filled once.")
       .addText((text) => text
         .setPlaceholder(DEFAULT_SETTINGS.paper2mdviallmModel)
         .setValue(this.plugin.settings.paper2mdviallmModel)
@@ -1717,8 +1713,8 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
         }));
 
     new Setting(containerEl)
-      .setName("Paper2MDViaLLM concurrency")
-      .setDesc("Only used when the backend is Paper2MDViaLLM. Higher values are faster but cost more API work in parallel.")
+      .setName("Concurrency for paper2mdviallm")
+      .setDesc("Only used when the backend is paper2mdviallm. Higher values are faster but cost more API work in parallel.")
       .addSlider((slider) => slider
         .setLimits(1, 6, 1)
         .setDynamicTooltip()
@@ -1729,7 +1725,7 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
         }));
 
     new Setting(containerEl)
-      .setName("Marker CLI path")
+      .setName("CLI path for Marker")
       .setDesc("Optional. Only used when the backend is Marker CLI, which is not recommended.")
       .addText((text) => text
         .setPlaceholder("marker_single")
@@ -1739,7 +1735,7 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }))
       .addButton((button) => button
-        .setButtonText("Use local Marker")
+        .setButtonText("Use local marker")
         .onClick(async () => {
           const localCommand = this.plugin.getLocalMarkerCommand();
           if (!localCommand || !fs.existsSync(localCommand)) {
@@ -1749,7 +1745,7 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
           this.plugin.settings.markerCommand = localCommand;
           await this.plugin.saveSettings();
           this.display();
-          new Notice("Marker CLI path set to local marker_single.");
+          new Notice("CLI path for Marker set to local marker_single.");
         }));
 
     new Setting(containerEl)
@@ -1757,7 +1753,7 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
       .setHeading();
 
     new Setting(containerEl)
-      .setName("OpenAI API key")
+      .setName("OpenAI key")
       .setDesc("Stored in this plugin's Obsidian data.json for compatibility with older supported Obsidian versions.")
       .addText((text) => {
         text.inputEl.type = "password";
@@ -1771,7 +1767,7 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
-      .setName("Anthropic API key")
+      .setName("Anthropic key")
       .setDesc("Stored in this plugin's Obsidian data.json for compatibility with older supported Obsidian versions.")
       .addText((text) => {
         text.inputEl.type = "password";
@@ -1792,8 +1788,8 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
       .setName("Reading prep provider")
       .setDesc("Used for key-sentence highlighting plus term discovery and explanation after Markdown import.")
       .addDropdown((dropdown) => dropdown
-        .addOption("openai", "OpenAI (GPT)")
-        .addOption("anthropic", "Anthropic (Claude)")
+        .addOption("openai", "OpenAI (GPT models)")
+        .addOption("anthropic", "Anthropic (Claude models)")
         .setValue(this.plugin.settings.provider)
         .onChange(async (value) => {
           this.plugin.settings.provider = value === "anthropic" ? "anthropic" : "openai";
@@ -1844,7 +1840,7 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Max precomputed terms")
-      .setDesc("MVP default is 40. Higher values cost more and take longer.")
+      .setDesc("The default is 40. Higher values cost more and take longer.")
       .addSlider((slider) => slider
         .setLimits(10, 120, 5)
         .setDynamicTooltip()
@@ -1865,7 +1861,7 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Glossary explanation length")
-      .setDesc("Controls newly generated glossary entries. Standard stores a fuller contextual definition plus cluster notes; Concise stores a 30-50 word definition plus cluster notes. Rebuild glossary entries to refresh existing cache.")
+      .setDesc("Controls newly generated glossary entries. Standard stores a fuller contextual definition plus cluster notes. Concise stores a 30-50 word definition plus cluster notes. Rebuild glossary entries to refresh existing cache.")
       .addDropdown((dropdown) => dropdown
         .addOption("standard", "Standard (current)")
         .addOption("brief", "Concise (30-50 words)")
