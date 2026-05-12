@@ -230,7 +230,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
 
     this.addCommand({
       id: "enrich-glossary-with-sep-for-current-paper",
-      name: "Enrich glossary with SEP for current paper",
+      name: "Enrich glossary with sep for current paper",
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
         const canRun = file instanceof TFile && file.extension.toLowerCase() === "md";
@@ -446,7 +446,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
           }));
 
         menu.addItem((item) => item
-          .setTitle("Enrich glossary with SEP")
+          .setTitle("Enrich glossary with sep")
           .setIcon("book-open")
           .onClick(() => {
             void this.enrichGlossaryWithSepForPaper(abstractFile, { background: false });
@@ -565,7 +565,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
     try {
       const precomputeGlossary = options.precomputeGlossary !== false;
       if (this.settings.pdfImportBackend === "marker" && !this.settings.markerCommand.trim()) {
-        new Notice("Set the Marker CLI path in settings first.");
+        new Notice("Set the marker CLI path in settings first.");
         return;
       }
       const scholarMdCommand = this.resolveScholarMdCommand();
@@ -587,7 +587,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
         ? parentPath
         : !existingDefaultFolder || existingDefaultFolder instanceof TFolder
           ? defaultPaperFolder
-          : await this.uniqueFolderPath(defaultPaperFolder);
+          : this.uniqueFolderPath(defaultPaperFolder);
       await this.ensureFolder(paperFolder);
 
       let pdfTarget = joinVaultPath(paperFolder, `${paperSlug}.pdf`);
@@ -619,7 +619,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
         importedAt: new Date().toISOString()
       });
 
-      const mdTarget = await this.uniqueVaultPath(joinVaultPath(paperFolder, `${paperSlug}.md`));
+      const mdTarget = this.uniqueVaultPath(joinVaultPath(paperFolder, `${paperSlug}.md`));
       await this.app.vault.create(mdTarget, paperMarkdown);
 
       const markdownFile = this.app.vault.getAbstractFileByPath(mdTarget);
@@ -634,7 +634,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
             void this.rebuildGlossary(markdownFile, { background: true });
           }
         } else {
-          new Notice("PDF converted to Markdown. Run 'Extract terms and explain from current Markdown' when you are ready.");
+          new Notice("The file was converted. Run the extract command when you are ready.");
         }
       }
     } catch (error) {
@@ -817,7 +817,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
 
   private async convertPdfWithMarker(pdfAbsPath: string, paperFolder: string, adapter: FileSystemAdapter): Promise<string> {
     this.setStatus("Converting PDF with Marker...");
-    new Notice("Converting PDF with Marker...");
+    new Notice("Converting PDF with marker...");
     const outputDir = path.join(adapter.getFullPath(paperFolder), ".marker-output");
     if (fs.existsSync(outputDir)) {
       fs.rmSync(outputDir, { recursive: true, force: true });
@@ -1215,7 +1215,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
           ]);
         }
         if (!options.background) {
-          new Notice("SEP enrichment is already cached for the selected glossary entries.");
+          new Notice("Sep enrichment is already cached for the selected glossary entries.");
         }
         return summary;
       }
@@ -1653,7 +1653,10 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "Settings" });
+
+    new Setting(containerEl)
+      .setName("Settings")
+      .setHeading();
 
     new Setting(containerEl)
       .setName("Markdown generation")
@@ -1661,10 +1664,10 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("PDF import backend")
-      .setDesc("paper2mdviallm is the default path. scholar-md stays available as a lighter beta path. Marker remains optional and not recommended.")
+      .setDesc("Paper2mdviallm is the default path. Scholar-md stays available as a lighter beta path. Marker remains optional and not recommended.")
       .addDropdown((dropdown) => dropdown
-        .addOption("paper2mdviallm", "paper2mdviallm (default)")
-        .addOption("scholar-md", "scholar-md (beta)")
+        .addOption("paper2mdviallm", "Paper2mdviallm (default)")
+        .addOption("scholar-md", "Scholar-md (beta)")
         .addOption("marker", "Marker CLI (not recommended)")
         .setValue(this.plugin.settings.pdfImportBackend)
         .onChange(async (value) => {
@@ -1681,7 +1684,7 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
       .setName("CLI path for paper2mdviallm")
       .setDesc("Optional. Resolution order: explicit setting, plugin .venv local tool, then shell PATH. You can paste either the executable itself or an environment root such as a conda env. The plugin resolves `bin/paper2mdviallm` or `Scripts/paper2mdviallm.exe` inside it.")
       .addText((text) => text
-        .setPlaceholder("paper2mdviallm")
+        .setPlaceholder("Enter command path")
         .setValue(this.plugin.settings.paper2mdviallmCommand)
         .onChange(async (value) => {
           this.plugin.settings.paper2mdviallmCommand = value.trim() || DEFAULT_SETTINGS.paper2mdviallmCommand;
@@ -1725,10 +1728,10 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
         }));
 
     new Setting(containerEl)
-      .setName("CLI path for Marker")
-      .setDesc("Optional. Only used when the backend is Marker CLI, which is not recommended.")
+      .setName("CLI path for marker")
+      .setDesc("Optional. Only used when the backend is marker CLI, which is not recommended.")
       .addText((text) => text
-        .setPlaceholder("marker_single")
+        .setPlaceholder("Enter command path")
         .setValue(this.plugin.settings.markerCommand)
         .onChange(async (value) => {
           this.plugin.settings.markerCommand = value.trim();
@@ -1745,7 +1748,7 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
           this.plugin.settings.markerCommand = localCommand;
           await this.plugin.saveSettings();
           this.display();
-          new Notice("CLI path for Marker set to local marker_single.");
+          new Notice("CLI path for marker set to the local command.");
         }));
 
     new Setting(containerEl)
@@ -1753,12 +1756,12 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
       .setHeading();
 
     new Setting(containerEl)
-      .setName("OpenAI key")
+      .setName("Openai key")
       .setDesc("Stored in this plugin's Obsidian data.json for compatibility with older supported Obsidian versions.")
       .addText((text) => {
         text.inputEl.type = "password";
         text
-          .setPlaceholder("sk-...")
+          .setPlaceholder("Paste key here")
           .setValue(this.plugin.settings.openaiApiKey)
           .onChange(async (value) => {
             this.plugin.settings.openaiApiKey = value.trim();
@@ -1772,7 +1775,7 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
       .addText((text) => {
         text.inputEl.type = "password";
         text
-          .setPlaceholder("sk-ant-...")
+          .setPlaceholder("Paste key here")
           .setValue(this.plugin.settings.anthropicApiKey)
           .onChange(async (value) => {
             this.plugin.settings.anthropicApiKey = value.trim();
@@ -1788,8 +1791,8 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
       .setName("Reading prep provider")
       .setDesc("Used for key-sentence highlighting plus term discovery and explanation after Markdown import.")
       .addDropdown((dropdown) => dropdown
-        .addOption("openai", "OpenAI (GPT models)")
-        .addOption("anthropic", "Anthropic (Claude models)")
+        .addOption("openai", "Openai (gpt models)")
+        .addOption("anthropic", "Anthropic (claude models)")
         .setValue(this.plugin.settings.provider)
         .onChange(async (value) => {
           this.plugin.settings.provider = value === "anthropic" ? "anthropic" : "openai";
@@ -1872,8 +1875,8 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
         }));
 
     new Setting(containerEl)
-      .setName("Enable SEP enrichment")
-      .setDesc("After glossary entries are prepared, fetch matching Stanford Encyclopedia of Philosophy introductions and cache a short SEP supplement for hover.")
+      .setName("Enable sep enrichment")
+      .setDesc("After glossary entries are prepared, fetch matching Stanford Encyclopedia of Philosophy introductions and cache a short supplement for hover.")
       .addToggle((toggle) => toggle
         .setValue(this.plugin.settings.sepEnrichmentEnabled)
         .onChange(async (value) => {

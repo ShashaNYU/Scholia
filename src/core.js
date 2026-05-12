@@ -844,8 +844,13 @@ function findWordAtPosition(lineText, position) {
 function analyzeMarkdownQuality(markdown) {
   const text = String(markdown || "");
   const lines = text.split(/\r?\n/);
-  const controlCharPattern = new RegExp("[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F]", "g");
-  const controlChars = (text.match(controlCharPattern) || []).length;
+  let controlChars = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index);
+    if ((code <= 0x08) || code === 0x0B || code === 0x0C || (code >= 0x0E && code <= 0x1F) || code === 0x7F) {
+      controlChars += 1;
+    }
+  }
   const mojibakeMarks = (text.match(/(?:â.|Ã.|Â.|ð|Ñ|ă|ĺ|ď|§|¶)/g) || []).length;
   const replacementChars = (text.match(/\uFFFD/g) || []).length;
   const cidRefs = (text.match(/\(cid:\d+\)/g) || []).length;
