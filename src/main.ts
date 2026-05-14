@@ -1655,7 +1655,7 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
     containerEl.empty();
 
     new Setting(containerEl)
-      .setName("Settings")
+      .setName("General")
       .setHeading();
 
     new Setting(containerEl)
@@ -1876,7 +1876,7 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Enable sep enrichment")
-      .setDesc("After glossary entries are prepared, fetch matching Stanford Encyclopedia of Philosophy introductions and cache a short supplement for hover.")
+      .setDesc("After glossary entries are prepared, fetch matching Stanford encyclopedia introductions and cache a short supplement for hover.")
       .addToggle((toggle) => toggle
         .setValue(this.plugin.settings.sepEnrichmentEnabled)
         .onChange(async (value) => {
