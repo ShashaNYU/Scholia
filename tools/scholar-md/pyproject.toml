@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scholar-md"
+version = "0.1.0"
+description = "Digital academic PDF to Obsidian-compatible Markdown converter."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Scholia" }]
+dependencies = [
+  "PyMuPDF>=1.24.0"
+]
+
+[project.optional-dependencies]
+llm = ["httpx>=0.27.0"]
+
+[project.scripts]
+scholar-md = "scholar_md.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

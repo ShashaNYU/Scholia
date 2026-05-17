@@ -1,0 +1,44 @@
+{
+  "documents": [
+    {
+      "id": "newriddle",
+      "path": "/Users/sharuixuan/Desktop/philo study/paper collection/newriddle.pdf",
+      "notes": "TeX article; philosophy prose with some formal material."
+    },
+    {
+      "id": "anaf011",
+      "path": "/Users/sharuixuan/Desktop/philo study/paper collection/anaf011.pdf",
+      "notes": "InDesign journal article; recent publication PDF."
+    },
+    {
+      "id": "maudlin-time-topology",
+      "path": "/Users/sharuixuan/Downloads/Philosophy_of_Physics_Space_and_Time_----_(Chapter_Seven_The_Direction_and_Topology_of_Time).pdf",
+      "notes": "ProQuest Ebook chapter; likely page headers/footers and occasional figures."
+    },
+    {
+      "id": "maudlin-general-relativity",
+      "path": "/Users/sharuixuan/Downloads/Philosophy_of_Physics_Space_and_Time_----_(Chapter_Six_General_Relativity).pdf",
+      "notes": "ProQuest Ebook chapter; physics prose, equations, and figures."
+    },
+    {
+      "id": "consistency-operator-note",
+      "path": "/Users/sharuixuan/Desktop/2026_spring/consistency_strength/A NOTE ON THE CONSISTENCY OPERATOR.pdf",
+      "notes": "Logic paper with dense formulas; formula accuracy is critical."
+    },
+    {
+      "id": "logic-of-provability",
+      "path": "/Users/sharuixuan/Desktop/2026_spring/consistency_strength/The Logic of Provability.pdf",
+      "notes": "Logic notes with modal operators; high risk from TeX fonts without Unicode maps."
+    },
+    {
+      "id": "goodman-hol-metaphysics",
+      "path": "/Users/sharuixuan/Desktop/philo study/HOMETAPHYSICS/Goodman - 2024 - Higher-Order Logic as Metaphysics.pdf",
+      "notes": "Higher-order logic paper; lambda and formula preservation matter."
+    },
+    {
+      "id": "horwich-confirmation",
+      "path": "/Users/sharuixuan/Desktop/philo study/horwich_prob_and_evidence/confirmation.pdf",
+      "notes": "Philosophy/probability article from publisher PDF."
+    }
+  ]
+}

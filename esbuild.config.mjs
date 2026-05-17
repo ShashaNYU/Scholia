@@ -1,11 +1,11 @@
-import builtins from "builtin-modules";
+import { builtinModules } from "node:module";
 import esbuild from "esbuild";
 
 const prod = process.argv[2] === "production";
 
 const context = await esbuild.context({
   banner: {
-    js: "/* Philosophy Reader */"
+    js: "/* Scholia */"
   },
   entryPoints: ["src/main.ts"],
   bundle: true,
@@ -23,7 +23,7 @@ const context = await esbuild.context({
     "@lezer/common",
     "@lezer/highlight",
     "@lezer/lr",
-    ...builtins
+    ...builtinModules
   ],
   format: "cjs",
   target: "es2020",

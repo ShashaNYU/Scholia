@@ -1,6 +1,10 @@
 "use strict";
 
 const WORD_BOUNDARY_RE = /[A-Za-z0-9_-]/;
+const SENTENCE_SEGMENTER = typeof Intl !== "undefined" && typeof Intl.Segmenter === "function"
+  ? new Intl.Segmenter("en", { granularity: "sentence" })
+  : null;
+const MIN_KEY_SENTENCE_PARAGRAPH_CHARS = 80;
 
 function stripFrontmatter(markdown) {
   if (!markdown.startsWith("---\n")) {
@@ -99,6 +103,7 @@ function splitParagraphs(markdown) {
       index,
       start,
       end,
+      raw: raw,
       text,
       heading: currentHeading
     });
@@ -134,6 +139,142 @@ function buildParagraphWindows(paragraphs, size, overlap) {
   }
 
   return windows;
+}
+
+function paragraphIdForIndex(index) {
+  return `p-${index}`;
+}
+
+function segmentSentences(text) {
+  const raw = String(text || "");
+  if (!raw) {
+    return [];
+  }
+  if (SENTENCE_SEGMENTER && !raw.includes("==")) {
+    return Array.from(SENTENCE_SEGMENTER.segment(raw), (item) => ({
+      index: item.index,
+      segment: item.segment
+    }));
+  }
+
+  const segments = [];
+  let start = 0;
+  for (let index = 0; index < raw.length; index += 1) {
+    if (!/[.!?]/.test(raw[index])) {
+      continue;
+    }
+    let end = index + 1;
+    while (end < raw.length) {
+      if (raw.slice(end, end + 2) === "==") {
+        end += 2;
+        continue;
+      }
+      if (/["')\]]/.test(raw[end])) {
+        end += 1;
+        continue;
+      }
+      break;
+    }
+    if (end < raw.length && !/\s/.test(raw[end])) {
+      continue;
+    }
+    while (end < raw.length && /\s/.test(raw[end])) {
+      end += 1;
+    }
+    segments.push({
+      index: start,
+      segment: raw.slice(start, end)
+    });
+    start = end;
+  }
+  if (start < raw.length) {
+    segments.push({
+      index: start,
+      segment: raw.slice(start)
+    });
+  }
+  return segments;
+}
+
+function normalizeSentenceText(value) {
+  return stripMarkdown(value)
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function splitParagraphSentences(markdown, paragraph) {
+  if (!paragraph || !Number.isFinite(paragraph.start) || !Number.isFinite(paragraph.end)) {
+    return [];
+  }
+
+  const rawParagraph = String(markdown || "").slice(paragraph.start, paragraph.end);
+  const paragraphId = paragraphIdForIndex(paragraph.index);
+  const sentences = [];
+
+  for (const item of segmentSentences(rawParagraph)) {
+    let start = item.index;
+    let end = item.index + item.segment.length;
+
+    while (start < end && /\s/.test(rawParagraph[start])) {
+      start += 1;
+    }
+    while (end > start && /\s/.test(rawParagraph[end - 1])) {
+      end -= 1;
+    }
+    if (end <= start) {
+      continue;
+    }
+
+    const rawText = rawParagraph.slice(start, end);
+    const text = stripMarkdown(rawText)
+      .replace(/\s+/g, " ")
+      .trim();
+    if (text.length < 20) {
+      continue;
+    }
+
+    sentences.push({
+      id: `${paragraphId}-s-${sentences.length + 1}`,
+      paragraphId,
+      paragraphIndex: paragraph.index,
+      startOffset: paragraph.start + start,
+      endOffset: paragraph.start + end,
+      rawText,
+      text
+    });
+  }
+
+  return sentences;
+}
+
+function buildKeySentenceParagraphs(markdown, paragraphs, minParagraphChars) {
+  const safeMinParagraphChars = Math.max(40, Number(minParagraphChars) || MIN_KEY_SENTENCE_PARAGRAPH_CHARS);
+  const candidates = [];
+
+  for (const paragraph of paragraphs || []) {
+    if (!paragraph || String(paragraph.text || "").length < safeMinParagraphChars) {
+      continue;
+    }
+
+    const sentences = splitParagraphSentences(markdown, paragraph)
+      .filter((sentence) => !String(sentence.rawText || "").includes("=="));
+    if (sentences.length < 2) {
+      continue;
+    }
+
+    candidates.push({
+      id: paragraphIdForIndex(paragraph.index),
+      paragraphIndex: paragraph.index,
+      heading: paragraph.heading || "",
+      text: paragraph.text,
+      startOffset: paragraph.start,
+      endOffset: paragraph.end,
+      sentences
+    });
+  }
+
+  return candidates;
 }
 
 function mergeTermCandidates(candidates, maxTerms) {
@@ -314,6 +455,95 @@ function chooseClusterForOffset(entry, offset) {
     .sort((a, b) => Math.abs(a.startOffset - offset) - Math.abs(b.startOffset - offset))[0];
 }
 
+function isWrappedSentenceHighlight(text) {
+  const raw = String(text || "");
+  return raw.startsWith("==") && raw.endsWith("==") && raw.length > 4;
+}
+
+function applySentenceHighlights(markdown, sentences) {
+  let output = String(markdown || "");
+  const seen = new Set();
+  const ordered = (Array.isArray(sentences) ? sentences : [])
+    .filter((sentence) => sentence && Number.isFinite(sentence.startOffset) && Number.isFinite(sentence.endOffset))
+    .filter((sentence) => {
+      const key = `${sentence.startOffset}:${sentence.endOffset}`;
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    })
+    .sort((a, b) => b.startOffset - a.startOffset);
+
+  for (const sentence of ordered) {
+    const snippet = output.slice(sentence.startOffset, sentence.endOffset);
+    if (!snippet) {
+      continue;
+    }
+    if (isWrappedSentenceHighlight(snippet) || snippet.includes("==")) {
+      continue;
+    }
+    output = `${output.slice(0, sentence.startOffset)}==${snippet}==${output.slice(sentence.endOffset)}`;
+  }
+
+  return output;
+}
+
+function removeManagedSentenceHighlights(markdown, records) {
+  const source = String(markdown || "");
+  if (!Array.isArray(records) || records.length === 0) {
+    return source;
+  }
+
+  const byParagraph = new Map();
+  for (const record of records) {
+    const paragraphIndex = Number(record && record.paragraphIndex);
+    const text = normalizeSentenceText(record && record.text);
+    if (!Number.isFinite(paragraphIndex) || !text) {
+      continue;
+    }
+    const existing = byParagraph.get(paragraphIndex) || [];
+    existing.push(text);
+    byParagraph.set(paragraphIndex, existing);
+  }
+
+  const matches = [];
+  for (const paragraph of splitParagraphs(source)) {
+    const targets = byParagraph.get(paragraph.index);
+    if (!targets || targets.length === 0) {
+      continue;
+    }
+
+    const remaining = targets.slice();
+    for (const sentence of splitParagraphSentences(source, paragraph)) {
+      if (!isWrappedSentenceHighlight(sentence.rawText)) {
+        continue;
+      }
+
+      const normalized = normalizeSentenceText(sentence.text);
+      const targetIndex = remaining.indexOf(normalized);
+      if (targetIndex === -1) {
+        continue;
+      }
+      remaining.splice(targetIndex, 1);
+      matches.push(sentence);
+    }
+  }
+
+  let output = source;
+  matches
+    .sort((a, b) => b.startOffset - a.startOffset)
+    .forEach((sentence) => {
+      const snippet = output.slice(sentence.startOffset, sentence.endOffset);
+      if (!isWrappedSentenceHighlight(snippet)) {
+        return;
+      }
+      output = `${output.slice(0, sentence.startOffset)}${snippet.slice(2, -2)}${output.slice(sentence.endOffset)}`;
+    });
+
+  return output;
+}
+
 function jsonCandidateFromText(text) {
   const raw = String(text || "").trim();
   const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
@@ -324,7 +554,7 @@ function parseJsonFromText(text) {
   const candidate = jsonCandidateFromText(text);
   try {
     return JSON.parse(candidate);
-  } catch (_) {
+  } catch {
     const objectStart = candidate.indexOf("{");
     const objectEnd = candidate.lastIndexOf("}");
     if (objectStart !== -1 && objectEnd > objectStart) {
@@ -346,7 +576,7 @@ function parseLooseJsonFromText(text) {
     const repaired = escapeBareQuotesInJsonStrings(jsonCandidateFromText(text));
     try {
       return JSON.parse(repaired);
-    } catch (_) {
+    } catch {
       throw error;
     }
   }
@@ -428,7 +658,7 @@ function parseYamlScalar(value) {
   if (trimmed.startsWith("[") || trimmed.startsWith("{") || trimmed.startsWith("\"")) {
     try {
       return JSON.parse(trimmed);
-    } catch (_) {
+    } catch {
       return trimmed.replace(/^"|"$/g, "");
     }
   }
@@ -438,6 +668,8 @@ function parseYamlScalar(value) {
 function buildGlossaryMarkdown(entry) {
   const clusters = Array.isArray(entry.clusters) ? entry.clusters : [];
   const aliases = Array.isArray(entry.aliases) ? entry.aliases : [];
+  const sep = normalizeSepEntry(entry.sep);
+  const sepEnabled = sep ? sep.status === "matched" : Boolean(entry.sep_enabled);
   const frontmatter = {
     term: entry.term,
     normalizedTerm: normalizeTerm(entry.term),
@@ -447,10 +679,9 @@ function buildGlossaryMarkdown(entry) {
     model: entry.model || "",
     created: entry.created || new Date().toISOString(),
     updated: entry.updated || new Date().toISOString(),
-    firstUse: entry.firstUse || "",
     definition: entry.definition || "",
-    authorUsage: entry.authorUsage || "",
-    sep_enabled: false,
+    sep_enabled: sepEnabled,
+    ...(sep ? { sep } : {}),
     clusters
   };
 
@@ -465,7 +696,34 @@ function buildGlossaryMarkdown(entry) {
     })
     .join("\n\n");
 
-  return `---\n${frontmatterText}\n---\n\n# ${entry.term}\n\n${entry.definition || ""}\n\n## Author usage\n\n${entry.authorUsage || ""}\n\n## First use\n\n${entry.firstUse || "No reliable first definition identified in the supplied context."}\n\n## Usage notes\n\n${usageNotes}\n`;
+  const sections = [
+    `---\n${frontmatterText}\n---`,
+    `# ${entry.term}`,
+    entry.definition || ""
+  ];
+
+  if (sep) {
+    sections.push("## SEP");
+    if (sep.status === "matched") {
+      sections.push(sep.summary || "SEP summary cached but empty.");
+      if (sep.entryUrl) {
+        const label = sep.entryTitle || "SEP entry";
+        sections.push(`Source: [${label}](${sep.entryUrl})`);
+      }
+      if (sep.revised) {
+        sections.push(`Revised: ${sep.revised}`);
+      }
+    } else if (sep.status === "not_found") {
+      sections.push("No SEP entry matched this term.");
+    } else {
+      sections.push(`SEP enrichment failed.${sep.error ? ` ${sep.error}` : ""}`.trim());
+    }
+  }
+
+  sections.push("## Usage notes");
+  sections.push(usageNotes);
+
+  return `${sections.join("\n\n")}\n`;
 }
 
 function parseGlossaryMarkdown(markdown) {
@@ -484,6 +742,7 @@ function parseGlossaryMarkdown(markdown) {
   if (!data.term && !data.normalizedTerm) {
     return null;
   }
+  const sep = normalizeSepEntry(data.sep);
   return {
     term: data.term || data.normalizedTerm,
     normalizedTerm: data.normalizedTerm || normalizeTerm(data.term),
@@ -493,11 +752,33 @@ function parseGlossaryMarkdown(markdown) {
     model: data.model || "",
     created: data.created || "",
     updated: data.updated || "",
-    firstUse: data.firstUse || "",
     definition: data.definition || "",
-    authorUsage: data.authorUsage || "",
     clusters: Array.isArray(data.clusters) ? data.clusters : [],
-    sep_enabled: Boolean(data.sep_enabled)
+    sep,
+    sep_enabled: sep ? sep.status === "matched" : Boolean(data.sep_enabled)
+  };
+}
+
+function normalizeSepEntry(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const status = String(value.status || "").trim();
+  if (!status) {
+    return null;
+  }
+
+  return {
+    status: status === "matched" || status === "not_found" || status === "failed" ? status : "failed",
+    query: String(value.query || ""),
+    entryTitle: String(value.entryTitle || ""),
+    entryUrl: String(value.entryUrl || ""),
+    summary: String(value.summary || ""),
+    sourceExcerpt: String(value.sourceExcerpt || ""),
+    revised: String(value.revised || ""),
+    fetchedAt: String(value.fetchedAt || ""),
+    error: String(value.error || "")
   };
 }
 
@@ -560,9 +841,84 @@ function findWordAtPosition(lineText, position) {
   return { word, from, to };
 }
 
+function analyzeMarkdownQuality(markdown) {
+  const text = String(markdown || "");
+  const lines = text.split(/\r?\n/);
+  let controlChars = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index);
+    if ((code <= 0x08) || code === 0x0B || code === 0x0C || (code >= 0x0E && code <= 0x1F) || code === 0x7F) {
+      controlChars += 1;
+    }
+  }
+  const mojibakeMarks = (text.match(/(?:â.|Ã.|Â.|ð|Ñ|ă|ĺ|ď|§|¶)/g) || []).length;
+  const replacementChars = (text.match(/\uFFFD/g) || []).length;
+  const cidRefs = (text.match(/\(cid:\d+\)/g) || []).length;
+  const boxedFormulaMarks = (text.match(/\\boxed\s*\{/g) || []).length;
+  const suspiciousFormulaMarks = (text.match(/\b6=|ConT p|gp\(|Ñ|ðñ|\(cid:\d+\)|\\boxed\s*\{/g) || []).length;
+  const mathSymbols = (text.match(/[□◇◻⊢⊨→↔¬∧∨∀∃λβηφψΓΣ≤≥≠∈∉⊂⊆⊥]/g) || []).length;
+  const longAlphaRuns = (text.match(/[A-Za-z]{24,}/g) || []).length;
+  const markdownTableLines = lines.filter((line) => /^\s*\|.*\|\s*$/.test(line)).length;
+  const nonEmptyLines = lines.filter((line) => line.trim());
+  const avgLineLength = nonEmptyLines.length
+    ? Math.round(nonEmptyLines.reduce((sum, line) => sum + line.length, 0) / nonEmptyLines.length)
+    : 0;
+
+  const warnings = [];
+  if (cidRefs > 0) {
+    warnings.push(`${cidRefs} PDF CID placeholder(s), often failed math or symbol extraction.`);
+  }
+  if (boxedFormulaMarks > 0) {
+    warnings.push(`${boxedFormulaMarks} \\boxed{...} expression(s); verify modal boxes were not misread as boxing notation.`);
+  }
+  if (controlChars > 0) {
+    warnings.push(`${controlChars} control character(s), often failed TeX symbol extraction.`);
+  }
+  if (mojibakeMarks > 0 || replacementChars > 0) {
+    warnings.push(`${mojibakeMarks + replacementChars} encoding anomaly marker(s).`);
+  }
+  if (longAlphaRuns > 0) {
+    warnings.push(`${longAlphaRuns} long unspaced alphabetic run(s), often layout or word-boundary loss.`);
+  }
+  if (markdownTableLines > 30) {
+    warnings.push(`${markdownTableLines} Markdown table-like line(s), often layout fragments in prose PDFs.`);
+  }
+
+  const riskScore = cidRefs * 4
+    + boxedFormulaMarks * 3
+    + controlChars * 4
+    + mojibakeMarks * 2
+    + replacementChars * 4
+    + suspiciousFormulaMarks * 2
+    + Math.min(longAlphaRuns, 50)
+    + Math.min(markdownTableLines, 100);
+  const riskLevel = riskScore >= 80 ? "high" : riskScore >= 20 ? "medium" : warnings.length > 0 ? "low" : "ok";
+
+  return {
+    chars: text.length,
+    lines: text ? lines.length : 0,
+    controlChars,
+    mojibakeMarks,
+    replacementChars,
+    cidRefs,
+    boxedFormulaMarks,
+    mathSymbols,
+    suspiciousFormulaMarks,
+    longAlphaRuns,
+    markdownTableLines,
+    avgLineLength,
+    riskScore,
+    riskLevel,
+    warnings
+  };
+}
+
 module.exports = {
+  analyzeMarkdownQuality,
+  applySentenceHighlights,
   buildContextClusters,
   buildGlossaryMarkdown,
+  buildKeySentenceParagraphs,
   buildParagraphWindows,
   chooseClusterForOffset,
   collectEntryTerms,
@@ -577,7 +933,9 @@ module.exports = {
   parseGlossaryMarkdown,
   parseJsonFromText,
   parseLooseJsonFromText,
+  removeManagedSentenceHighlights,
   slugify,
+  splitParagraphSentences,
   splitParagraphs,
   stripFrontmatter,
   stripMarkdown

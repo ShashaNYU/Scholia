@@ -6,7 +6,6 @@ import { EditorView, hoverTooltip, type Tooltip } from "@codemirror/view";
 import {
   App,
   FileSystemAdapter,
-  MarkdownView,
   Notice,
   Plugin,
   PluginSettingTab,
@@ -16,8 +15,11 @@ import {
   normalizePath
 } from "obsidian";
 import {
+  analyzeMarkdownQuality,
+  applySentenceHighlights,
   buildContextClusters,
   buildGlossaryMarkdown,
+  buildKeySentenceParagraphs,
   buildParagraphWindows,
   chooseClusterForOffset,
   excerptAround,
@@ -29,25 +31,45 @@ import {
   mergeTermCandidates,
   normalizeTerm,
   parseGlossaryMarkdown,
+  removeManagedSentenceHighlights,
   slugify,
   splitParagraphs,
   type ContextCluster,
   type GlossaryEntry,
+  type KeySentenceParagraph,
+  type MarkdownQualityReport,
+  type SepEntryData,
+  type SentenceSpan,
   type TermCandidate
 } from "./core.js";
 import {
   createLLMProvider,
+  type ChosenSepEntry,
   type ExplainTermInput,
   type ExplainedTerm,
+  type KeySentenceParagraphInput,
+  type KeySentenceDensity,
+  type LLMProvider,
   type PdfImportBackend,
-  type PhilosophyReaderSettings
+  type PhilosophyReaderSettings,
+  type SepSummary
 } from "./llmProviders";
+import {
+  fetchSepEntry,
+  pickSepCandidateHeuristically,
+  searchSep,
+  type ParsedSepEntry,
+  type RankedSepCandidate,
+  type SepSearchCandidate
+} from "./sep.js";
 
 const execFileAsync = promisify(execFile);
 const EXPLANATION_BATCH_SIZE = 2;
+const KEY_SENTENCE_BATCH_SIZE = 6;
 const MAX_EXPLANATION_OCCURRENCES = 5;
 const EXPLANATION_EXCERPT_RADIUS = 350;
 const MAX_EXPLANATION_CLUSTERS = 3;
+const SEP_CANDIDATE_LIMIT = 5;
 
 const DEFAULT_SETTINGS: PhilosophyReaderSettings = {
   provider: "openai",
@@ -55,13 +77,20 @@ const DEFAULT_SETTINGS: PhilosophyReaderSettings = {
   anthropicApiKey: "",
   openaiModel: "gpt-5.4-mini",
   anthropicModel: "claude-sonnet-4-6",
-  pdfImportBackend: "pdfjs",
+  pdfImportBackend: "paper2mdviallm",
+  paper2mdviallmCommand: "paper2mdviallm",
+  paper2mdviallmModel: "claude-sonnet-4-6",
+  paper2mdviallmConcurrency: 3,
   markerCommand: "marker_single",
   maxPrecomputedTerms: 40,
   glossaryFolderName: "_glossary",
+  glossaryExplanationLength: "standard",
+  sepEnrichmentEnabled: false,
   hoverDelayMs: 350,
   windowSize: 4,
-  windowOverlap: 1
+  windowOverlap: 1,
+  autoHighlightKeySentences: true,
+  keySentenceDensity: "medium"
 };
 
 interface GlossaryIndex {
@@ -73,6 +102,52 @@ interface RebuildOptions {
   background?: boolean;
 }
 
+interface ImportPdfOptions {
+  precomputeGlossary?: boolean;
+}
+
+interface SepEnrichmentOptions {
+  background?: boolean;
+  provider?: LLMProvider;
+  requestedTerms?: string[];
+  writeStatus?: boolean;
+}
+
+interface SepEnrichmentSummary {
+  attempted: number;
+  matched: number;
+  notFound: number;
+  failed: number;
+  skipped: number;
+}
+
+interface ResolvedCommand {
+  command: string;
+  source: "local" | "path";
+}
+
+interface HighlightKeySentencesOptions {
+  background?: boolean;
+  silentSuccess?: boolean;
+}
+
+interface KeySentenceSidecarRecord {
+  paragraphId: string;
+  paragraphIndex: number;
+  sentenceId: string;
+  text: string;
+}
+
+interface KeySentenceSidecar {
+  version: number;
+  paper: string;
+  provider: string;
+  model: string;
+  density: KeySentenceDensity;
+  updated: string;
+  highlights: KeySentenceSidecarRecord[];
+}
+
 export default class PhilosophyReaderPlugin extends Plugin {
   settings: PhilosophyReaderSettings = { ...DEFAULT_SETTINGS };
   private statusEl: HTMLElement | null = null;
@@ -82,15 +157,16 @@ export default class PhilosophyReaderPlugin extends Plugin {
     await this.loadSettings();
 
     this.statusEl = this.addStatusBarItem();
-    this.statusEl.addClass("philosophy-reader-progress");
+    this.statusEl.addClass("scholia-progress");
     this.setStatus("");
 
     this.addSettingTab(new PhilosophyReaderSettingTab(this.app, this));
     this.registerEditorExtension(this.buildHoverExtension());
+    this.registerContextMenuActions();
 
     this.addCommand({
       id: "import-pdf-as-philosophy-paper",
-      name: "Import PDF as Philosophy Paper",
+      name: "Import PDF and prepare for reading",
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
         const canRun = file instanceof TFile && file.extension.toLowerCase() === "pdf";
@@ -98,7 +174,23 @@ export default class PhilosophyReaderPlugin extends Plugin {
           return canRun;
         }
         if (canRun) {
-          void this.importPdfAsPaper(file);
+          void this.importPdfAsPaper(file, { precomputeGlossary: true });
+        }
+        return canRun;
+      }
+    });
+
+    this.addCommand({
+      id: "convert-current-pdf-to-markdown",
+      name: "Convert current PDF to Markdown only",
+      checkCallback: (checking) => {
+        const file = this.app.workspace.getActiveFile();
+        const canRun = file instanceof TFile && file.extension.toLowerCase() === "pdf";
+        if (checking) {
+          return canRun;
+        }
+        if (canRun) {
+          void this.importPdfAsPaper(file, { precomputeGlossary: false });
         }
         return canRun;
       }
@@ -106,7 +198,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
 
     this.addCommand({
       id: "rebuild-glossary-for-current-paper",
-      name: "Rebuild Glossary for Current Paper",
+      name: "Rebuild glossary for current paper",
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
         const canRun = file instanceof TFile && file.extension.toLowerCase() === "md";
@@ -121,8 +213,56 @@ export default class PhilosophyReaderPlugin extends Plugin {
     });
 
     this.addCommand({
+      id: "extract-terms-and-explain-current-markdown",
+      name: "Extract terms and explain from current Markdown",
+      checkCallback: (checking) => {
+        const file = this.app.workspace.getActiveFile();
+        const canRun = file instanceof TFile && file.extension.toLowerCase() === "md";
+        if (checking) {
+          return canRun;
+        }
+        if (canRun) {
+          void this.extractTermsAndExplain(file);
+        }
+        return canRun;
+      }
+    });
+
+    this.addCommand({
+      id: "enrich-glossary-with-sep-for-current-paper",
+      name: "Enrich glossary with sep for current paper",
+      checkCallback: (checking) => {
+        const file = this.app.workspace.getActiveFile();
+        const canRun = file instanceof TFile && file.extension.toLowerCase() === "md";
+        if (checking) {
+          return canRun;
+        }
+        if (canRun) {
+          void this.enrichGlossaryWithSepForPaper(file, { background: false });
+        }
+        return canRun;
+      }
+    });
+
+    this.addCommand({
+      id: "highlight-key-sentences-for-current-paper",
+      name: "Highlight key sentences for current paper",
+      checkCallback: (checking) => {
+        const file = this.app.workspace.getActiveFile();
+        const canRun = file instanceof TFile && file.extension.toLowerCase() === "md";
+        if (checking) {
+          return canRun;
+        }
+        if (canRun) {
+          void this.highlightKeySentences(file, { background: false });
+        }
+        return canRun;
+      }
+    });
+
+    this.addCommand({
       id: "explain-term-now",
-      name: "Explain Term Now",
+      name: "Explain term now",
       editorCheckCallback: (checking, editor, view) => {
         const file = view.file;
         const selection = editor.getSelection().trim();
@@ -153,8 +293,57 @@ export default class PhilosophyReaderPlugin extends Plugin {
   }
 
   getLocalMarkerCommand(): string | null {
+    return this.findLocalToolCommand("marker_single");
+  }
+
+  getLocalScholarMdCommand(): string | null {
+    return this.findLocalToolCommand("scholar-md");
+  }
+
+  getLocalPaper2mdViaLlmCommand(): string | null {
+    return this.findLocalToolCommand("paper2mdviallm");
+  }
+
+  private findLocalToolCommand(executableBaseName: string): string | null {
     const pluginPath = this.getPluginDiskPath();
-    return pluginPath ? path.join(pluginPath, ".venv", "bin", "marker_single") : null;
+    if (!pluginPath) {
+      return null;
+    }
+
+    const candidates = [
+      path.join(pluginPath, ".venv", "bin", executableBaseName),
+      path.join(pluginPath, ".venv", "Scripts", `${executableBaseName}.exe`),
+      path.join(pluginPath, ".venv", "Scripts", executableBaseName),
+      path.join(pluginPath, ".venv", "bin", `${executableBaseName}.exe`)
+    ];
+    return candidates.find((candidate) => fs.existsSync(candidate)) || null;
+  }
+
+  private resolveScholarMdCommand(): ResolvedCommand {
+    const localScholarMd = this.getLocalScholarMdCommand();
+    if (localScholarMd && fs.existsSync(localScholarMd)) {
+      return { command: localScholarMd, source: "local" };
+    }
+
+    return { command: "scholar-md", source: "path" };
+  }
+
+  private resolvePaper2mdViaLlmCommand(): ResolvedCommand {
+    const configured = this.settings.paper2mdviallmCommand.trim();
+    if (configured && configured !== DEFAULT_SETTINGS.paper2mdviallmCommand) {
+      const resolvedConfigured = resolveConfiguredToolCommand(configured, "paper2mdviallm");
+      return {
+        command: resolvedConfigured,
+        source: looksLikeLocalPath(configured) ? "local" : "path"
+      };
+    }
+
+    const localPaper2mdViaLlm = this.getLocalPaper2mdViaLlmCommand();
+    if (localPaper2mdViaLlm && fs.existsSync(localPaper2mdViaLlm)) {
+      return { command: localPaper2mdViaLlm, source: "local" };
+    }
+
+    return { command: DEFAULT_SETTINGS.paper2mdviallmCommand, source: "path" };
   }
 
   private getPluginDiskPath(): string | null {
@@ -168,11 +357,45 @@ export default class PhilosophyReaderPlugin extends Plugin {
   }
 
   private migrateStaleImportSettings(): void {
-    const command = this.settings.markerCommand || "";
-    const pointsAtDeletedLocalMarker = command.includes(`${path.sep}.venv${path.sep}bin${path.sep}marker_single`) && !fs.existsSync(command);
+    const markerCommand = this.settings.markerCommand || "";
+    const pointsAtDeletedLocalMarker = markerCommand.includes(`${path.sep}.venv${path.sep}bin${path.sep}marker_single`) && !fs.existsSync(markerCommand);
     if (pointsAtDeletedLocalMarker) {
-      this.settings.pdfImportBackend = "pdfjs";
+      this.settings.pdfImportBackend = DEFAULT_SETTINGS.pdfImportBackend;
       this.settings.markerCommand = DEFAULT_SETTINGS.markerCommand;
+      void this.saveSettings();
+    }
+
+    if ((this.settings.pdfImportBackend as string) === "markitdown" || (this.settings.pdfImportBackend as string) === "pdfjs") {
+      this.settings.pdfImportBackend = DEFAULT_SETTINGS.pdfImportBackend;
+      void this.saveSettings();
+    }
+
+    const raw = this.settings as unknown as Record<string, unknown>;
+    if (raw.paper2mdCommand !== undefined && raw.paper2mdviallmCommand === undefined) {
+      raw.paper2mdviallmCommand = raw.paper2mdCommand;
+      delete raw.paper2mdCommand;
+      void this.saveSettings();
+    }
+    if (raw.paper2mdModel !== undefined && raw.paper2mdviallmModel === undefined) {
+      raw.paper2mdviallmModel = raw.paper2mdModel;
+      delete raw.paper2mdModel;
+      void this.saveSettings();
+    }
+    if (raw.paper2mdConcurrency !== undefined && raw.paper2mdviallmConcurrency === undefined) {
+      raw.paper2mdviallmConcurrency = raw.paper2mdConcurrency;
+      delete raw.paper2mdConcurrency;
+      void this.saveSettings();
+    }
+    if ((this.settings.pdfImportBackend as string) === "paper2md") {
+      this.settings.pdfImportBackend = "paper2mdviallm";
+      void this.saveSettings();
+    }
+    if (raw.markitdownCommand !== undefined) {
+      delete raw.markitdownCommand;
+      void this.saveSettings();
+    }
+    if (raw.scholarMdCommand !== undefined) {
+      delete raw.scholarMdCommand;
       void this.saveSettings();
     }
   }
@@ -182,6 +405,54 @@ export default class PhilosophyReaderPlugin extends Plugin {
       async (view: EditorView, pos: number): Promise<Tooltip | null> => this.resolveHoverTooltip(view, pos),
       { hoverTime: this.settings.hoverDelayMs }
     );
+  }
+
+  private registerContextMenuActions(): void {
+    this.registerEvent(this.app.workspace.on("file-menu", (menu, abstractFile) => {
+      if (!(abstractFile instanceof TFile)) {
+        return;
+      }
+
+      const extension = abstractFile.extension.toLowerCase();
+      if (extension === "pdf") {
+        menu.addItem((item) => item
+          .setTitle("Import PDF and prepare for reading")
+          .setIcon("sparkles")
+          .onClick(() => {
+            void this.importPdfAsPaper(abstractFile, { precomputeGlossary: true });
+          }));
+
+        menu.addItem((item) => item
+          .setTitle("Convert PDF to Markdown only")
+          .setIcon("file-text")
+          .onClick(() => {
+            void this.importPdfAsPaper(abstractFile, { precomputeGlossary: false });
+          }));
+      }
+
+      if (extension === "md") {
+        menu.addItem((item) => item
+          .setTitle("Highlight key sentences")
+          .setIcon("highlighter")
+          .onClick(() => {
+            void this.highlightKeySentences(abstractFile, { background: false });
+          }));
+
+        menu.addItem((item) => item
+          .setTitle("Extract terms and explain")
+          .setIcon("brain")
+          .onClick(() => {
+            void this.extractTermsAndExplain(abstractFile);
+          }));
+
+        menu.addItem((item) => item
+          .setTitle("Enrich glossary with sep")
+          .setIcon("book-open")
+          .onClick(() => {
+            void this.enrichGlossaryWithSepForPaper(abstractFile, { background: false });
+          }));
+      }
+    }));
   }
 
   private async resolveHoverTooltip(view: EditorView, pos: number): Promise<Tooltip | null> {
@@ -220,7 +491,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
 
   private renderPreparedTooltip(entry: GlossaryEntry, cluster: ContextCluster | null): HTMLElement {
     const root = document.createElement("div");
-    root.addClass("philosophy-reader-tooltip");
+    root.addClass("scholia-tooltip");
 
     const title = document.createElement("h4");
     title.setText(entry.term);
@@ -230,20 +501,29 @@ export default class PhilosophyReaderPlugin extends Plugin {
     definition.setText(entry.definition || "No definition was generated.");
     root.appendChild(definition);
 
-    if (entry.authorUsage) {
+    if (entry.sep?.status === "matched" && entry.sep.summary) {
       const label = document.createElement("div");
-      label.addClass("philosophy-reader-label");
-      label.setText("Author usage");
+      label.addClass("scholia-label");
+      label.setText("SEP");
       root.appendChild(label);
 
-      const authorUsage = document.createElement("p");
-      authorUsage.setText(entry.authorUsage);
-      root.appendChild(authorUsage);
+      const summary = document.createElement("p");
+      summary.setText(entry.sep.summary);
+      root.appendChild(summary);
+
+      if (entry.sep.entryUrl) {
+        const link = document.createElement("a");
+        link.href = entry.sep.entryUrl;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.setText(entry.sep.entryTitle || "Open SEP entry");
+        root.appendChild(link);
+      }
     }
 
     if (cluster?.usageNote) {
       const label = document.createElement("div");
-      label.addClass("philosophy-reader-label");
+      label.addClass("scholia-label");
       label.setText(cluster.label || "This passage");
       root.appendChild(label);
 
@@ -252,30 +532,19 @@ export default class PhilosophyReaderPlugin extends Plugin {
       root.appendChild(usage);
     }
 
-    if (entry.firstUse) {
-      const label = document.createElement("div");
-      label.addClass("philosophy-reader-label");
-      label.setText("First use");
-      root.appendChild(label);
-
-      const firstUse = document.createElement("p");
-      firstUse.setText(entry.firstUse);
-      root.appendChild(firstUse);
-    }
-
     return root;
   }
 
   private renderUnpreparedTooltip(word: string, file: TFile): HTMLElement {
     const root = document.createElement("div");
-    root.addClass("philosophy-reader-tooltip");
+    root.addClass("scholia-tooltip");
 
     const title = document.createElement("h4");
     title.setText(word);
     root.appendChild(title);
 
     const message = document.createElement("p");
-    message.addClass("philosophy-reader-empty");
+    message.addClass("scholia-empty");
     message.setText("No prepared glossary entry yet.");
     root.appendChild(message);
 
@@ -292,12 +561,15 @@ export default class PhilosophyReaderPlugin extends Plugin {
     return root;
   }
 
-  private async importPdfAsPaper(file: TFile): Promise<void> {
+  private async importPdfAsPaper(file: TFile, options: ImportPdfOptions = {}): Promise<void> {
     try {
+      const precomputeGlossary = options.precomputeGlossary !== false;
       if (this.settings.pdfImportBackend === "marker" && !this.settings.markerCommand.trim()) {
-        new Notice("Set the Marker CLI path in Philosophy Reader settings first.");
+        new Notice("Set the marker CLI path in settings first.");
         return;
       }
+      const scholarMdCommand = this.resolveScholarMdCommand();
+      const paper2mdViaLlmCommand = this.resolvePaper2mdViaLlmCommand();
 
       const adapter = this.app.vault.adapter;
       if (!(adapter instanceof FileSystemAdapter)) {
@@ -315,7 +587,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
         ? parentPath
         : !existingDefaultFolder || existingDefaultFolder instanceof TFolder
           ? defaultPaperFolder
-          : await this.uniqueFolderPath(defaultPaperFolder);
+          : this.uniqueFolderPath(defaultPaperFolder);
       await this.ensureFolder(paperFolder);
 
       let pdfTarget = joinVaultPath(paperFolder, `${paperSlug}.pdf`);
@@ -338,21 +610,32 @@ export default class PhilosophyReaderPlugin extends Plugin {
       const pdfAbsPath = adapter.getFullPath(pdfTarget);
       const importedMarkdown = this.settings.pdfImportBackend === "marker"
         ? await this.convertPdfWithMarker(pdfAbsPath, paperFolder, adapter)
-        : await this.convertDigitalPdfWithPdfJs(pdfAbsPath, paperFolder, baseName, pdfTarget);
+        : this.settings.pdfImportBackend === "paper2mdviallm"
+          ? await this.convertPdfWithPaper2MDViaLLM(pdfAbsPath, paperFolder, baseName, pdfTarget, adapter, paper2mdViaLlmCommand)
+          : await this.convertPdfWithScholarMd(pdfAbsPath, paperFolder, baseName, pdfTarget, adapter, scholarMdCommand);
       const paperMarkdown = buildImportedPaperMarkdown(importedMarkdown, {
         title: baseName,
         sourcePdf: pdfTarget,
         importedAt: new Date().toISOString()
       });
 
-      const mdTarget = await this.uniqueVaultPath(joinVaultPath(paperFolder, `${paperSlug}.md`));
+      const mdTarget = this.uniqueVaultPath(joinVaultPath(paperFolder, `${paperSlug}.md`));
       await this.app.vault.create(mdTarget, paperMarkdown);
 
       const markdownFile = this.app.vault.getAbstractFileByPath(mdTarget);
       if (markdownFile instanceof TFile) {
         await this.app.workspace.getLeaf(false).openFile(markdownFile);
-        new Notice("PDF imported. Glossary preprocessing is running in the background. Check _glossary/_status.md for progress.");
-        void this.rebuildGlossary(markdownFile, { background: true });
+        if (precomputeGlossary) {
+          if (this.settings.autoHighlightKeySentences) {
+            new Notice("PDF imported. Key sentence highlighting and glossary preprocessing are running in the background.");
+            void this.preparePaperForReading(markdownFile, { background: true });
+          } else {
+            new Notice("PDF imported. Glossary preprocessing is running in the background. Check _glossary/_status.md for progress.");
+            void this.rebuildGlossary(markdownFile, { background: true });
+          }
+        } else {
+          new Notice("The file was converted. Run the extract command when you are ready.");
+        }
       }
     } catch (error) {
       new Notice(`PDF import failed: ${toErrorMessage(error)}`);
@@ -362,35 +645,179 @@ export default class PhilosophyReaderPlugin extends Plugin {
     }
   }
 
-  private async convertDigitalPdfWithPdfJs(
+  private async convertPdfWithPaper2MDViaLLM(
     pdfAbsPath: string,
     paperFolder: string,
     paperTitle: string,
-    sourcePdfPath: string
+    sourcePdfPath: string,
+    adapter: FileSystemAdapter,
+    resolvedCommand: ResolvedCommand
   ): Promise<string> {
-    this.setStatus("Philosophy Reader: extracting selectable PDF text...");
-    new Notice("Extracting selectable PDF text...");
-
-    const extracted = await extractPdfTextWithPdfJs(pdfAbsPath);
-    if (extracted.totalChars < 800) {
-      throw new Error("PDF.js found very little selectable text. This PDF may be scanned; use the Marker backend for now.");
+    const model = this.resolvePaper2mdViaLlmModel();
+    const concurrency = Math.max(1, Math.round(this.settings.paper2mdviallmConcurrency || DEFAULT_SETTINGS.paper2mdviallmConcurrency));
+    const usingOpenAI = isOpenAIModel(model);
+    if (usingOpenAI && !this.settings.openaiApiKey.trim()) {
+      throw new Error("Paper2MDViaLLM is configured with an OpenAI model, but the OpenAI API key is empty.");
+    }
+    if (!usingOpenAI && !this.settings.anthropicApiKey.trim()) {
+      throw new Error("Paper2MDViaLLM is configured with an Anthropic model, but the Anthropic API key is empty.");
     }
 
+    this.setStatus("Converting PDF with paper2mdviallm...");
+    const commandLabel = resolvedCommand.source === "local" ? "local Paper2MDViaLLM" : "Paper2MDViaLLM";
+    new Notice(`Converting PDF with ${commandLabel}...`);
+
+    const outputDir = path.join(adapter.getFullPath(paperFolder), ".paper2mdviallm-output");
+    if (fs.existsSync(outputDir)) {
+      fs.rmSync(outputDir, { recursive: true, force: true });
+    }
+    fs.mkdirSync(outputDir, { recursive: true });
+    const logPath = path.join(outputDir, "import.log");
+    const paper2mdViaLlmArgs = [
+      "convert",
+      pdfAbsPath,
+      "-o",
+      outputDir,
+      "--model",
+      model,
+      "--concurrency",
+      String(concurrency)
+    ];
+
+    try {
+      const result = await execFileAsync(resolvedCommand.command, paper2mdViaLlmArgs, {
+        maxBuffer: 1024 * 1024 * 80,
+        env: this.buildPaper2mdEnv()
+      });
+      fs.writeFileSync(logPath, formatMarkerLog(resolvedCommand.command, paper2mdViaLlmArgs, result.stdout, result.stderr), "utf8");
+    } catch (error) {
+      const execError = error as Error & { stdout?: string; stderr?: string };
+      fs.writeFileSync(logPath, formatMarkerLog(resolvedCommand.command, paper2mdViaLlmArgs, execError.stdout || "", execError.stderr || toErrorMessage(error)), "utf8");
+      throw new Error(`Paper2MDViaLLM conversion failed. See ${logPath}`);
+    }
+
+    const paper2mdViaLlmMarkdown = findLargestMarkdownFile(outputDir);
+    if (!paper2mdViaLlmMarkdown) {
+      throw new Error("Paper2MDViaLLM finished without producing a markdown file.");
+    }
+
+    const importedMarkdown = fs.readFileSync(paper2mdViaLlmMarkdown, "utf8").trim();
+    if (importedMarkdown.replace(/\s/g, "").length < 800) {
+      throw new Error("Paper2MDViaLLM found very little readable text. This PDF may still need targeted OCR or a different import backend.");
+    }
+
+    const quality = analyzeMarkdownQuality(importedMarkdown);
+    await this.writeVaultTextFile(joinVaultPath(paperFolder, "_source", "paper2mdviallm.md"), `${importedMarkdown}\n`);
     await this.writeVaultTextFile(
-      joinVaultPath(paperFolder, "_source", "raw-pages.json"),
+      joinVaultPath(paperFolder, "_source", "import-quality.json"),
       `${JSON.stringify({
-        ...extracted,
+        backend: "paper2mdviallm",
+        command: resolvedCommand.command,
+        commandSource: resolvedCommand.source,
+        model,
+        llmProvider: usingOpenAI ? "openai" : "anthropic",
+        concurrency,
+        generatedFile: path.basename(paper2mdViaLlmMarkdown),
         paperTitle,
-        sourcePdf: sourcePdfPath
+        sourcePdf: sourcePdfPath,
+        importedAt: new Date().toISOString(),
+        quality
       }, null, 2)}\n`
     );
+    await this.writeVaultTextFile(
+      joinVaultPath(paperFolder, "_source", "import-warnings.md"),
+      buildImportWarningsMarkdown("Paper2MDViaLLM", sourcePdfPath, quality)
+    );
 
-    return buildMarkdownFromExtractedPdfText(extracted, paperTitle);
+    fs.rmSync(outputDir, { recursive: true, force: true });
+    if (quality.riskLevel === "high" || quality.riskLevel === "medium") {
+      new Notice(`PDF imported with ${quality.riskLevel} extraction risk. Check _source/import-warnings.md before trusting formulas.`);
+    }
+    return importedMarkdown;
+  }
+
+  private async convertPdfWithScholarMd(
+    pdfAbsPath: string,
+    paperFolder: string,
+    paperTitle: string,
+    sourcePdfPath: string,
+    adapter: FileSystemAdapter,
+    resolvedCommand: ResolvedCommand
+  ): Promise<string> {
+    this.setStatus("Converting PDF with scholar-md...");
+    const commandLabel = resolvedCommand.source === "local" ? "local Scholar-MD" : "Scholar-MD";
+    new Notice(`Converting PDF with ${commandLabel} (beta)...`);
+
+    const outputDir = path.join(adapter.getFullPath(paperFolder), ".scholar-md-output");
+    if (fs.existsSync(outputDir)) {
+      fs.rmSync(outputDir, { recursive: true, force: true });
+    }
+    fs.mkdirSync(outputDir, { recursive: true });
+    const outputPath = path.join(outputDir, "scholar-md.md");
+    const diagnosticsPath = path.join(outputDir, "scholar-md.diagnostics.json");
+    const logPath = path.join(outputDir, "import.log");
+    const scholarMdArgs = [
+      pdfAbsPath,
+      "-o",
+      outputPath,
+      "--emit-diagnostics",
+      "--diagnostics-output",
+      diagnosticsPath
+    ];
+
+    try {
+      const result = await execFileAsync(resolvedCommand.command, scholarMdArgs, {
+        maxBuffer: 1024 * 1024 * 80
+      });
+      fs.writeFileSync(logPath, formatMarkerLog(resolvedCommand.command, scholarMdArgs, result.stdout, result.stderr), "utf8");
+    } catch (error) {
+      const execError = error as Error & { stdout?: string; stderr?: string };
+      fs.writeFileSync(logPath, formatMarkerLog(resolvedCommand.command, scholarMdArgs, execError.stdout || "", execError.stderr || toErrorMessage(error)), "utf8");
+      throw new Error(`Scholar-MD conversion failed. See ${logPath}`);
+    }
+
+    if (!fs.existsSync(outputPath)) {
+      throw new Error("Scholar-MD finished without producing a markdown file.");
+    }
+
+    const importedMarkdown = fs.readFileSync(outputPath, "utf8").trim();
+    if (importedMarkdown.replace(/\s/g, "").length < 800) {
+      throw new Error("Scholar-MD found very little selectable text. This PDF may need OCR.");
+    }
+
+    const quality = analyzeMarkdownQuality(importedMarkdown);
+    await this.writeVaultTextFile(joinVaultPath(paperFolder, "_source", "scholar-md.md"), `${importedMarkdown}\n`);
+    if (fs.existsSync(diagnosticsPath)) {
+      const diagnostics = fs.readFileSync(diagnosticsPath, "utf8");
+      await this.writeVaultTextFile(joinVaultPath(paperFolder, "_source", "scholar-md.diagnostics.json"), diagnostics);
+    }
+    await this.writeVaultTextFile(
+      joinVaultPath(paperFolder, "_source", "import-quality.json"),
+      `${JSON.stringify({
+        backend: "scholar-md",
+        command: resolvedCommand.command,
+        commandSource: resolvedCommand.source,
+        paperTitle,
+        sourcePdf: sourcePdfPath,
+        importedAt: new Date().toISOString(),
+        quality
+      }, null, 2)}\n`
+    );
+    await this.writeVaultTextFile(
+      joinVaultPath(paperFolder, "_source", "import-warnings.md"),
+      buildImportWarningsMarkdown("Scholar-MD", sourcePdfPath, quality)
+    );
+
+    fs.rmSync(outputDir, { recursive: true, force: true });
+    if (quality.riskLevel === "high" || quality.riskLevel === "medium") {
+      new Notice(`PDF imported with ${quality.riskLevel} extraction risk. Check _source/import-warnings.md before trusting formulas.`);
+    }
+    return importedMarkdown;
   }
 
   private async convertPdfWithMarker(pdfAbsPath: string, paperFolder: string, adapter: FileSystemAdapter): Promise<string> {
-    this.setStatus("Philosophy Reader: converting PDF with Marker...");
-    new Notice("Converting PDF with Marker...");
+    this.setStatus("Converting PDF with Marker...");
+    new Notice("Converting PDF with marker...");
     const outputDir = path.join(adapter.getFullPath(paperFolder), ".marker-output");
     if (fs.existsSync(outputDir)) {
       fs.rmSync(outputDir, { recursive: true, force: true });
@@ -430,6 +857,118 @@ export default class PhilosophyReaderPlugin extends Plugin {
     return importedMarkdown;
   }
 
+  private resolvePaper2mdViaLlmModel(): string {
+    const override = this.settings.paper2mdviallmModel.trim();
+    if (override) {
+      return override;
+    }
+    return DEFAULT_SETTINGS.paper2mdviallmModel;
+  }
+
+  private buildPaper2mdEnv(): NodeJS.ProcessEnv {
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    if (this.settings.openaiApiKey.trim()) {
+      env.OPENAI_API_KEY = this.settings.openaiApiKey.trim();
+    }
+    if (this.settings.anthropicApiKey.trim()) {
+      env.ANTHROPIC_API_KEY = this.settings.anthropicApiKey.trim();
+    }
+    return env;
+  }
+
+  private async preparePaperForReading(file: TFile, options: { background?: boolean } = {}): Promise<void> {
+    if (this.settings.autoHighlightKeySentences) {
+      await this.highlightKeySentences(file, {
+        background: options.background,
+        silentSuccess: true
+      });
+    }
+    await this.rebuildGlossary(file, { background: options.background });
+  }
+
+  private async highlightKeySentences(file: TFile, options: HighlightKeySentencesOptions = {}): Promise<boolean> {
+    try {
+      const provider = createLLMProvider(this.settings);
+      const originalMarkdown = await this.app.vault.read(file);
+      const existingSidecar = await this.loadKeySentenceSidecar(file);
+      const cleanedMarkdown = removeManagedSentenceHighlights(originalMarkdown, existingSidecar.highlights);
+      const paragraphs = splitParagraphs(cleanedMarkdown);
+      const candidates = buildKeySentenceParagraphs(cleanedMarkdown, paragraphs);
+
+      if (candidates.length === 0) {
+        if (cleanedMarkdown !== originalMarkdown) {
+          await this.writeVaultTextFile(file.path, cleanedMarkdown);
+        }
+        await this.writeKeySentenceSidecar(file, this.buildKeySentenceSidecar(file, provider.name, provider.model, this.settings.keySentenceDensity, []));
+        if (!options.silentSuccess) {
+          new Notice("No multi-sentence prose paragraphs were eligible for key-sentence highlighting.");
+        }
+        return true;
+      }
+
+      const selectedByParagraph = new Map<string, SentenceSpan>();
+      let processed = 0;
+      for (const batch of chunk(candidates, KEY_SENTENCE_BATCH_SIZE)) {
+        const rangeStart = processed + 1;
+        const rangeEnd = processed + batch.length;
+        processed += batch.length;
+        this.setStatus(`Selecting key sentences ${rangeStart}-${rangeEnd}/${candidates.length}`);
+
+        const selections = await provider.selectKeySentences({
+          paperTitle: getBaseName(file.path),
+          sourcePaper: file.path,
+          density: this.settings.keySentenceDensity,
+          paragraphs: batch.map((paragraph) => this.toKeySentenceParagraphInput(paragraph))
+        });
+
+        for (const selection of selections) {
+          if (selectedByParagraph.has(selection.paragraphId)) {
+            continue;
+          }
+          const sentence = findSelectedKeySentence(batch, selection.paragraphId, selection.sentenceId);
+          if (sentence) {
+            selectedByParagraph.set(selection.paragraphId, sentence);
+          }
+        }
+      }
+
+      const highlights = Array.from(selectedByParagraph.values());
+      const highlightedMarkdown = applySentenceHighlights(cleanedMarkdown, highlights);
+      if (highlightedMarkdown !== originalMarkdown) {
+        await this.writeVaultTextFile(file.path, highlightedMarkdown);
+      }
+      await this.writeKeySentenceSidecar(file, this.buildKeySentenceSidecar(file, provider.name, provider.model, this.settings.keySentenceDensity, highlights));
+
+      if (!options.silentSuccess) {
+        if (highlights.length === 0) {
+          new Notice("No key sentences were selected for highlighting.");
+        } else {
+          new Notice(`Highlighted key sentences: ${highlights.length} paragraph${highlights.length === 1 ? "" : "s"}.`);
+        }
+      }
+      return true;
+    } catch (error) {
+      new Notice(`Key sentence highlighting failed: ${toErrorMessage(error)}`);
+      console.error(error);
+      return false;
+    } finally {
+      this.setStatus("");
+    }
+  }
+
+  private toKeySentenceParagraphInput(paragraph: KeySentenceParagraph): KeySentenceParagraphInput {
+    return {
+      paragraphId: paragraph.id,
+      paragraphIndex: paragraph.paragraphIndex,
+      heading: paragraph.heading,
+      text: paragraph.text,
+      sentences: paragraph.sentences.map((sentence) => ({
+        id: sentence.id,
+        text: sentence.text
+      }))
+    };
+  }
+
   private async rebuildGlossary(file: TFile, options: RebuildOptions): Promise<void> {
     try {
       const provider = createLLMProvider(this.settings);
@@ -454,7 +993,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
       const discovered: TermCandidate[] = [];
 
       for (let index = 0; index < windows.length; index += 1) {
-        this.setStatus(`Philosophy Reader: discovering terms ${index + 1}/${windows.length}`);
+        this.setStatus(`Discovering terms ${index + 1}/${windows.length}`);
         const terms = await provider.discoverTerms({
           paperTitle: getBaseName(file.path),
           sourcePaper: file.path,
@@ -486,9 +1025,10 @@ export default class PhilosophyReaderPlugin extends Plugin {
       const inputs = pendingTerms.map((term) => this.buildExplainTermInput(markdown, paragraphs, term));
       const batches = chunk(inputs, EXPLANATION_BATCH_SIZE);
       let completed = 0;
+      const writtenTerms = new Set<string>();
 
       for (const batch of batches) {
-        this.setStatus(`Philosophy Reader: explaining terms ${completed + 1}-${completed + batch.length}/${inputs.length}`);
+        this.setStatus(`Explaining terms ${completed + 1}-${completed + batch.length}/${inputs.length}`);
         const explanations = await provider.explainTerms({
           paperTitle: getBaseName(file.path),
           sourcePaper: file.path,
@@ -500,20 +1040,32 @@ export default class PhilosophyReaderPlugin extends Plugin {
           if (!input) {
             continue;
           }
-          await this.writeGlossaryEntry(file, this.toGlossaryEntry(file, provider.name, provider.model, input, explanation));
+          const entry = this.toGlossaryEntry(file, provider.name, provider.model, input, explanation);
+          await this.writeGlossaryEntry(file, entry);
+          writtenTerms.add(normalizeTerm(entry.term));
           completed += 1;
         }
       }
 
       this.glossaryCache.delete(file.path);
       await this.loadGlossaryIndex(file, true);
+      let sepSummary: SepEnrichmentSummary | null = null;
+      if (this.settings.sepEnrichmentEnabled && writtenTerms.size > 0) {
+        sepSummary = await this.enrichGlossaryWithSepForPaper(file, {
+          background: true,
+          provider,
+          requestedTerms: Array.from(writtenTerms),
+          writeStatus: false
+        });
+      }
       await this.writeGlossaryStatus(file, "ready", [
         `Completed: ${new Date().toISOString()}`,
         `New terms prepared: ${completed}`,
         `Provider: ${provider.name}`,
-        `Model: ${provider.model}`
+        `Model: ${provider.model}`,
+        ...this.buildSepStatusLines(sepSummary)
       ]);
-      new Notice(`Glossary prepared: ${completed} new term${completed === 1 ? "" : "s"}.`);
+      new Notice(buildGlossaryReadyNotice(completed, sepSummary));
     } catch (error) {
       await this.writeGlossaryStatus(file, "failed", [
         `Failed: ${new Date().toISOString()}`,
@@ -527,6 +1079,10 @@ export default class PhilosophyReaderPlugin extends Plugin {
     } finally {
       this.setStatus("");
     }
+  }
+
+  private async extractTermsAndExplain(file: TFile): Promise<void> {
+    await this.rebuildGlossary(file, { background: false });
   }
 
   private buildExplainTermInput(markdown: string, paragraphs: ReturnType<typeof splitParagraphs>, term: TermCandidate): ExplainTermInput {
@@ -574,10 +1130,9 @@ export default class PhilosophyReaderPlugin extends Plugin {
       model,
       created: now,
       updated: now,
-      firstUse: explanation.firstUse || "",
       definition: explanation.definition || "",
-      authorUsage: explanation.authorUsage || "",
       clusters,
+      sep: null,
       sep_enabled: false
     };
   }
@@ -600,13 +1155,282 @@ export default class PhilosophyReaderPlugin extends Plugin {
         terms: [input]
       });
       await this.ensureFolder(this.glossaryFolderPath(file));
-      await this.writeGlossaryEntry(file, this.toGlossaryEntry(file, provider.name, provider.model, input, explanation));
+      const entry = this.toGlossaryEntry(file, provider.name, provider.model, input, explanation);
+      await this.writeGlossaryEntry(file, entry);
       this.glossaryCache.delete(file.path);
-      new Notice(`Prepared glossary entry: ${explanation.term || selectedTerm}`);
+      let sepSummary: SepEnrichmentSummary | null = null;
+      if (this.settings.sepEnrichmentEnabled) {
+        sepSummary = await this.enrichGlossaryWithSepForPaper(file, {
+          background: true,
+          provider,
+          requestedTerms: [normalizeTerm(entry.term)],
+          writeStatus: false
+        });
+      }
+      new Notice(buildPreparedTermNotice(explanation.term || selectedTerm, sepSummary));
     } catch (error) {
-      new Notice(`Explain Term Now failed: ${toErrorMessage(error)}`);
+      new Notice(`Explain term now failed: ${toErrorMessage(error)}`);
       console.error(error);
     }
+  }
+
+  private async enrichGlossaryWithSepForPaper(file: TFile, options: SepEnrichmentOptions = {}): Promise<SepEnrichmentSummary> {
+    const provider = options.provider || createLLMProvider(this.settings);
+    const writeStatus = options.writeStatus !== false;
+    const requestedTerms = new Set((options.requestedTerms || [])
+      .map((term) => normalizeTerm(term))
+      .filter(Boolean));
+    const summary: SepEnrichmentSummary = {
+      attempted: 0,
+      matched: 0,
+      notFound: 0,
+      failed: 0,
+      skipped: 0
+    };
+
+    try {
+      const index = await this.loadGlossaryIndex(file, true);
+      const matchingEntries = index.entries.filter((entry) => (
+        requestedTerms.size === 0 || requestedTerms.has(normalizeTerm(entry.term))
+      ));
+      const targets = matchingEntries.filter((entry) => (
+        entry.sep?.status !== "matched" && entry.sep?.status !== "not_found"
+      ));
+      summary.skipped = matchingEntries.length - targets.length;
+
+      if (writeStatus) {
+        await this.writeGlossaryStatus(file, "running", [
+          `SEP enrichment started: ${new Date().toISOString()}`,
+          `Provider: ${provider.name}`,
+          `Model: ${provider.model}`,
+          `Targets: ${targets.length}`
+        ]);
+      }
+
+      if (targets.length === 0) {
+        if (writeStatus) {
+          await this.writeGlossaryStatus(file, "ready", [
+            "SEP enrichment is already cached for the selected glossary entries.",
+            `Skipped entries: ${summary.skipped}`
+          ]);
+        }
+        if (!options.background) {
+          new Notice("Sep enrichment is already cached for the selected glossary entries.");
+        }
+        return summary;
+      }
+
+      for (let index = 0; index < targets.length; index += 1) {
+        const target = targets[index];
+        summary.attempted += 1;
+        this.setStatus(`Enriching glossary with SEP ${index + 1}/${targets.length}`);
+
+        try {
+          const sep = await this.buildSepDataForEntry(file, target, provider);
+          await this.writeGlossaryEntry(file, {
+            ...target,
+            updated: new Date().toISOString(),
+            sep,
+            sep_enabled: sep.status === "matched"
+          });
+
+          if (sep.status === "matched") {
+            summary.matched += 1;
+          } else if (sep.status === "not_found") {
+            summary.notFound += 1;
+          } else {
+            summary.failed += 1;
+          }
+        } catch (error) {
+          summary.failed += 1;
+          const sep = this.buildFailedSepData(target.term, target.term, error);
+          await this.writeGlossaryEntry(file, {
+            ...target,
+            updated: new Date().toISOString(),
+            sep,
+            sep_enabled: false
+          });
+        }
+      }
+
+      this.glossaryCache.delete(file.path);
+      await this.loadGlossaryIndex(file, true);
+
+      if (writeStatus) {
+        await this.writeGlossaryStatus(file, "ready", [
+          `SEP enrichment completed: ${new Date().toISOString()}`,
+          ...this.buildSepStatusLines(summary)
+        ]);
+      }
+
+      if (!options.background) {
+        new Notice(buildSepNotice(summary));
+      }
+
+      return summary;
+    } catch (error) {
+      if (writeStatus) {
+        await this.writeGlossaryStatus(file, "failed", [
+          `SEP enrichment failed: ${new Date().toISOString()}`,
+          toErrorMessage(error)
+        ]);
+      }
+      if (!options.background) {
+        new Notice(`SEP enrichment failed: ${toErrorMessage(error)}`);
+      }
+      console.error(error);
+      return summary;
+    } finally {
+      this.setStatus("");
+    }
+  }
+
+  private async buildSepDataForEntry(file: TFile, entry: GlossaryEntry, provider: LLMProvider): Promise<SepEntryData> {
+    const now = new Date().toISOString();
+    const queries = Array.from(new Set([entry.term, ...(entry.aliases || [])]
+      .map((term) => String(term || "").trim())
+      .filter(Boolean)));
+    let usedQuery = entry.term;
+    let candidates: SepSearchCandidate[] = [];
+
+    for (const query of queries) {
+      usedQuery = query;
+      candidates = (await searchSep(query)).slice(0, SEP_CANDIDATE_LIMIT);
+      if (candidates.length > 0) {
+        break;
+      }
+    }
+
+    if (candidates.length === 0) {
+      return {
+        status: "not_found",
+        query: usedQuery,
+        entryTitle: "",
+        entryUrl: "",
+        summary: "",
+        sourceExcerpt: "",
+        revised: "",
+        fetchedAt: now
+      };
+    }
+
+    const heuristic = pickSepCandidateHeuristically(candidates, entry.term, entry.aliases);
+    let chosenCandidate = heuristic.candidate;
+
+    if (!chosenCandidate) {
+      const choice = await provider.chooseSepEntry({
+        paperTitle: getBaseName(file.path),
+        sourcePaper: file.path,
+        term: entry.term,
+        aliases: entry.aliases || [],
+        definition: entry.definition,
+        clusters: entry.clusters || [],
+        candidates: heuristic.candidates.map(({ score, ...candidate }) => candidate)
+      });
+      chosenCandidate = this.resolveChosenSepCandidate(choice, heuristic.candidates);
+      if (!chosenCandidate) {
+        return {
+          status: "not_found",
+          query: usedQuery,
+          entryTitle: "",
+          entryUrl: "",
+          summary: "",
+          sourceExcerpt: "",
+          revised: "",
+          fetchedAt: now
+        };
+      }
+    }
+
+    const sepEntry = await fetchSepEntry(chosenCandidate.url);
+    if (!sepEntry.preamble.trim()) {
+      return this.buildFailedSepData(entry.term, usedQuery, new Error("SEP entry did not include a readable preamble."));
+    }
+    const summary = await provider.summarizeSepEntry({
+      paperTitle: getBaseName(file.path),
+      sourcePaper: file.path,
+      term: entry.term,
+      definition: entry.definition,
+      entryTitle: sepEntry.title || chosenCandidate.title,
+      entryUrl: chosenCandidate.url,
+      preamble: sepEntry.preamble
+    });
+    return this.buildMatchedSepData(usedQuery, chosenCandidate, sepEntry, summary, now);
+  }
+
+  private resolveChosenSepCandidate(choice: ChosenSepEntry, candidates: RankedSepCandidate[]): RankedSepCandidate | null {
+    if (!choice.matched) {
+      return null;
+    }
+
+    const byUrl = candidates.find((candidate) => candidate.url === choice.url);
+    if (byUrl) {
+      return byUrl;
+    }
+
+    const normalizedTitle = normalizeTerm(choice.title);
+    const byTitle = candidates.find((candidate) => normalizeTerm(candidate.title) === normalizedTitle);
+    if (byTitle) {
+      return byTitle;
+    }
+
+    if (!choice.url.startsWith("https://plato.stanford.edu/entries/")) {
+      return null;
+    }
+
+    return {
+      title: choice.title,
+      url: choice.url,
+      snippet: "",
+      normalizedTitle,
+      score: 0
+    };
+  }
+
+  private buildMatchedSepData(
+    query: string,
+    candidate: RankedSepCandidate,
+    sepEntry: ParsedSepEntry,
+    summary: SepSummary,
+    fetchedAt: string
+  ): SepEntryData {
+    return {
+      status: "matched",
+      query,
+      entryTitle: sepEntry.title || candidate.title,
+      entryUrl: candidate.url,
+      summary: summary.summary,
+      sourceExcerpt: sepEntry.sourceExcerpt || sepEntry.preamble,
+      revised: sepEntry.revised || "",
+      fetchedAt
+    };
+  }
+
+  private buildFailedSepData(term: string, query: string, error: unknown): SepEntryData {
+    return {
+      status: "failed",
+      query: query || term,
+      entryTitle: "",
+      entryUrl: "",
+      summary: "",
+      sourceExcerpt: "",
+      revised: "",
+      fetchedAt: new Date().toISOString(),
+      error: toErrorMessage(error)
+    };
+  }
+
+  private buildSepStatusLines(summary: SepEnrichmentSummary | null): string[] {
+    if (!summary) {
+      return [];
+    }
+    return [
+      `SEP attempted: ${summary.attempted}`,
+      `SEP matched: ${summary.matched}`,
+      `SEP not found: ${summary.notFound}`,
+      `SEP failed: ${summary.failed}`,
+      `SEP skipped: ${summary.skipped}`
+    ];
   }
 
   private async writeGlossaryEntry(file: TFile, entry: GlossaryEntry): Promise<void> {
@@ -633,6 +1457,87 @@ export default class PhilosophyReaderPlugin extends Plugin {
       ""
     ].join("\n");
     await this.writeVaultTextFile(joinVaultPath(folderPath, "_status.md"), markdown);
+  }
+
+  private buildKeySentenceSidecar(
+    file: TFile,
+    provider: string,
+    model: string,
+    density: KeySentenceDensity,
+    highlights: SentenceSpan[]
+  ): KeySentenceSidecar {
+    return {
+      version: 1,
+      paper: file.path,
+      provider,
+      model,
+      density,
+      updated: new Date().toISOString(),
+      highlights: highlights.map((sentence) => ({
+        paragraphId: sentence.paragraphId,
+        paragraphIndex: sentence.paragraphIndex,
+        sentenceId: sentence.id,
+        text: sentence.text
+      }))
+    };
+  }
+
+  private async loadKeySentenceSidecar(file: TFile): Promise<KeySentenceSidecar> {
+    const sidecarPath = this.keySentenceSidecarPath(file);
+    const existing = this.app.vault.getAbstractFileByPath(sidecarPath);
+    if (!(existing instanceof TFile)) {
+      return {
+        version: 1,
+        paper: file.path,
+        provider: "",
+        model: "",
+        density: "medium",
+        updated: "",
+        highlights: []
+      };
+    }
+
+    try {
+      const parsed = JSON.parse(await this.app.vault.read(existing)) as Partial<KeySentenceSidecar>;
+      return {
+        version: Number(parsed.version) || 1,
+        paper: typeof parsed.paper === "string" ? parsed.paper : file.path,
+        provider: typeof parsed.provider === "string" ? parsed.provider : "",
+        model: typeof parsed.model === "string" ? parsed.model : "",
+        density: parsed.density === "sparse" ? "sparse" : "medium",
+        updated: typeof parsed.updated === "string" ? parsed.updated : "",
+        highlights: Array.isArray(parsed.highlights)
+          ? parsed.highlights
+            .filter((item): item is KeySentenceSidecarRecord => !!item && typeof item === "object")
+            .map((item) => ({
+              paragraphId: typeof item.paragraphId === "string" ? item.paragraphId : "",
+              paragraphIndex: Number(item.paragraphIndex),
+              sentenceId: typeof item.sentenceId === "string" ? item.sentenceId : "",
+              text: typeof item.text === "string" ? item.text : ""
+            }))
+            .filter((item) => item.paragraphId && item.sentenceId && Number.isFinite(item.paragraphIndex) && item.text)
+          : []
+      };
+    } catch (error) {
+      console.error(error);
+      return {
+        version: 1,
+        paper: file.path,
+        provider: "",
+        model: "",
+        density: "medium",
+        updated: "",
+        highlights: []
+      };
+    }
+  }
+
+  private async writeKeySentenceSidecar(file: TFile, sidecar: KeySentenceSidecar): Promise<void> {
+    await this.ensureFolder(this.sourceFolderPath(file));
+    await this.writeVaultTextFile(
+      this.keySentenceSidecarPath(file),
+      `${JSON.stringify(sidecar, null, 2)}\n`
+    );
   }
 
   private async writeVaultTextFile(vaultPath: string, text: string): Promise<void> {
@@ -681,7 +1586,15 @@ export default class PhilosophyReaderPlugin extends Plugin {
     return joinVaultPath(getParentPath(file.path), this.settings.glossaryFolderName);
   }
 
-  private async uniqueFolderPath(basePath: string): Promise<string> {
+  private sourceFolderPath(file: TFile): string {
+    return joinVaultPath(getParentPath(file.path), "_source");
+  }
+
+  private keySentenceSidecarPath(file: TFile): string {
+    return joinVaultPath(this.sourceFolderPath(file), "key-sentences.json");
+  }
+
+  private uniqueFolderPath(basePath: string): string {
     let candidate = basePath;
     let index = 2;
     while (this.app.vault.getAbstractFileByPath(candidate)) {
@@ -691,7 +1604,7 @@ export default class PhilosophyReaderPlugin extends Plugin {
     return candidate;
   }
 
-  private async uniqueVaultPath(basePath: string): Promise<string> {
+  private uniqueVaultPath(basePath: string): string {
     const extensionIndex = basePath.lastIndexOf(".");
     const prefix = extensionIndex === -1 ? basePath : basePath.slice(0, extensionIndex);
     const extension = extensionIndex === -1 ? "" : basePath.slice(extensionIndex);
@@ -741,34 +1654,91 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    containerEl.createEl("h2", { text: "Philosophy Reader" });
-    containerEl.createEl("h3", { text: "PDF import" });
+    new Setting(containerEl)
+      .setName("General")
+      .setHeading();
+
+    new Setting(containerEl)
+      .setName("Markdown generation")
+      .setHeading();
 
     new Setting(containerEl)
       .setName("PDF import backend")
-      .setDesc("PDF.js is the lightweight default for selectable-text PDFs. Marker is optional.")
+      .setDesc("Paper2mdviallm is the default path. Scholar-md stays available as a lighter beta path. Marker remains optional and not recommended.")
       .addDropdown((dropdown) => dropdown
-        .addOption("pdfjs", "PDF.js text extraction")
-        .addOption("marker", "Marker CLI")
+        .addOption("paper2mdviallm", "Paper2mdviallm (default)")
+        .addOption("scholar-md", "Scholar-md (beta)")
+        .addOption("marker", "Marker CLI (not recommended)")
         .setValue(this.plugin.settings.pdfImportBackend)
         .onChange(async (value) => {
-          const backend: PdfImportBackend = value === "marker" ? "marker" : "pdfjs";
+          const backend: PdfImportBackend = value === "marker"
+            ? "marker"
+            : value === "paper2mdviallm"
+              ? "paper2mdviallm"
+              : "scholar-md";
           this.plugin.settings.pdfImportBackend = backend;
           await this.plugin.saveSettings();
         }));
 
     new Setting(containerEl)
-      .setName("Marker CLI path")
-      .setDesc("Optional. Only used when the backend is Marker CLI.")
+      .setName("CLI path for paper2mdviallm")
+      .setDesc("Optional. Resolution order: explicit setting, plugin .venv local tool, then shell PATH. You can paste either the executable itself or an environment root such as a conda env. The plugin resolves `bin/paper2mdviallm` or `Scripts/paper2mdviallm.exe` inside it.")
       .addText((text) => text
-        .setPlaceholder("marker_single")
+        .setPlaceholder("Enter command path")
+        .setValue(this.plugin.settings.paper2mdviallmCommand)
+        .onChange(async (value) => {
+          this.plugin.settings.paper2mdviallmCommand = value.trim() || DEFAULT_SETTINGS.paper2mdviallmCommand;
+          await this.plugin.saveSettings();
+        }))
+      .addButton((button) => button
+        .setButtonText("Use local paper2mdviallm")
+        .onClick(async () => {
+          const localCommand = this.plugin.getLocalPaper2mdViaLlmCommand();
+          if (!localCommand || !fs.existsSync(localCommand)) {
+            new Notice("Local paper2mdviallm was not found in this plugin's .venv.");
+            return;
+          }
+          this.plugin.settings.paper2mdviallmCommand = localCommand;
+          await this.plugin.saveSettings();
+          this.display();
+          new Notice("CLI path for paper2mdviallm set to the local tool.");
+        }));
+
+    new Setting(containerEl)
+      .setName("Markdown generation model")
+      .setDesc("Used by paper2mdviallm. The provider is inferred from the model name, so API keys stay global and only need to be filled once.")
+      .addText((text) => text
+        .setPlaceholder(DEFAULT_SETTINGS.paper2mdviallmModel)
+        .setValue(this.plugin.settings.paper2mdviallmModel)
+        .onChange(async (value) => {
+          this.plugin.settings.paper2mdviallmModel = value.trim() || DEFAULT_SETTINGS.paper2mdviallmModel;
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName("Concurrency for paper2mdviallm")
+      .setDesc("Only used when the backend is paper2mdviallm. Higher values are faster but cost more API work in parallel.")
+      .addSlider((slider) => slider
+        .setLimits(1, 6, 1)
+        .setDynamicTooltip()
+        .setValue(this.plugin.settings.paper2mdviallmConcurrency)
+        .onChange(async (value) => {
+          this.plugin.settings.paper2mdviallmConcurrency = value;
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName("CLI path for marker")
+      .setDesc("Optional. Only used when the backend is marker CLI, which is not recommended.")
+      .addText((text) => text
+        .setPlaceholder("Enter command path")
         .setValue(this.plugin.settings.markerCommand)
         .onChange(async (value) => {
           this.plugin.settings.markerCommand = value.trim();
           await this.plugin.saveSettings();
         }))
       .addButton((button) => button
-        .setButtonText("Use local Marker")
+        .setButtonText("Use local marker")
         .onClick(async () => {
           const localCommand = this.plugin.getLocalMarkerCommand();
           if (!localCommand || !fs.existsSync(localCommand)) {
@@ -778,30 +1748,20 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
           this.plugin.settings.markerCommand = localCommand;
           await this.plugin.saveSettings();
           this.display();
-          new Notice("Marker CLI path set to local marker_single.");
-        }));
-
-    containerEl.createEl("h3", { text: "LLM" });
-
-    new Setting(containerEl)
-      .setName("LLM provider")
-      .setDesc("Currently supports OpenAI and Anthropic.")
-      .addDropdown((dropdown) => dropdown
-        .addOption("openai", "OpenAI (GPT)")
-        .addOption("anthropic", "Anthropic (Claude)")
-        .setValue(this.plugin.settings.provider)
-        .onChange(async (value) => {
-          this.plugin.settings.provider = value === "anthropic" ? "anthropic" : "openai";
-          await this.plugin.saveSettings();
+          new Notice("CLI path for marker set to the local command.");
         }));
 
     new Setting(containerEl)
-      .setName("OpenAI API key")
-      .setDesc("Stored in this plugin's Obsidian data.json.")
+      .setName("API keys")
+      .setHeading();
+
+    new Setting(containerEl)
+      .setName("Openai key")
+      .setDesc("Stored in this plugin's Obsidian data.json for compatibility with older supported Obsidian versions.")
       .addText((text) => {
         text.inputEl.type = "password";
         text
-          .setPlaceholder("sk-...")
+          .setPlaceholder("Paste key here")
           .setValue(this.plugin.settings.openaiApiKey)
           .onChange(async (value) => {
             this.plugin.settings.openaiApiKey = value.trim();
@@ -810,21 +1770,12 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
-      .setName("OpenAI model")
-      .addText((text) => text
-        .setValue(this.plugin.settings.openaiModel)
-        .onChange(async (value) => {
-          this.plugin.settings.openaiModel = value.trim() || DEFAULT_SETTINGS.openaiModel;
-          await this.plugin.saveSettings();
-        }));
-
-    new Setting(containerEl)
-      .setName("Anthropic API key")
-      .setDesc("Stored in this plugin's Obsidian data.json.")
+      .setName("Anthropic key")
+      .setDesc("Stored in this plugin's Obsidian data.json for compatibility with older supported Obsidian versions.")
       .addText((text) => {
         text.inputEl.type = "password";
         text
-          .setPlaceholder("sk-ant-...")
+          .setPlaceholder("Paste key here")
           .setValue(this.plugin.settings.anthropicApiKey)
           .onChange(async (value) => {
             this.plugin.settings.anthropicApiKey = value.trim();
@@ -833,19 +1784,66 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
-      .setName("Anthropic model")
-      .addText((text) => text
-        .setValue(this.plugin.settings.anthropicModel)
+      .setName("Reading prep")
+      .setHeading();
+
+    new Setting(containerEl)
+      .setName("Reading prep provider")
+      .setDesc("Used for key-sentence highlighting plus term discovery and explanation after Markdown import.")
+      .addDropdown((dropdown) => dropdown
+        .addOption("openai", "Openai (gpt models)")
+        .addOption("anthropic", "Anthropic (claude models)")
+        .setValue(this.plugin.settings.provider)
         .onChange(async (value) => {
-          this.plugin.settings.anthropicModel = value.trim() || DEFAULT_SETTINGS.anthropicModel;
+          this.plugin.settings.provider = value === "anthropic" ? "anthropic" : "openai";
+          await this.plugin.saveSettings();
+          this.display();
+        }));
+
+    new Setting(containerEl)
+      .setName("Reading prep model")
+      .setDesc("This can differ from the Markdown generation model above. One-click import and reading prep stays available either way.")
+      .addText((text) => text
+        .setPlaceholder(this.plugin.settings.provider === "anthropic" ? DEFAULT_SETTINGS.anthropicModel : DEFAULT_SETTINGS.openaiModel)
+        .setValue(getReadingModel(this.plugin.settings))
+        .onChange(async (value) => {
+          if (this.plugin.settings.provider === "anthropic") {
+            this.plugin.settings.anthropicModel = value.trim() || DEFAULT_SETTINGS.anthropicModel;
+          } else {
+            this.plugin.settings.openaiModel = value.trim() || DEFAULT_SETTINGS.openaiModel;
+          }
           await this.plugin.saveSettings();
         }));
 
-    containerEl.createEl("h3", { text: "Glossary" });
+    new Setting(containerEl)
+      .setName("Auto highlight key sentences after import")
+      .setDesc("When enabled, import runs key-sentence highlighting before glossary preprocessing.")
+      .addToggle((toggle) => toggle
+        .setValue(this.plugin.settings.autoHighlightKeySentences)
+        .onChange(async (value) => {
+          this.plugin.settings.autoHighlightKeySentences = value;
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName("Key sentence density")
+      .setDesc("Medium matches the current behavior. Sparse highlights only structurally important sentences.")
+      .addDropdown((dropdown) => dropdown
+        .addOption("medium", "Medium")
+        .addOption("sparse", "Sparse")
+        .setValue(this.plugin.settings.keySentenceDensity)
+        .onChange(async (value) => {
+          this.plugin.settings.keySentenceDensity = value === "sparse" ? "sparse" : "medium";
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName("Glossary")
+      .setHeading();
 
     new Setting(containerEl)
       .setName("Max precomputed terms")
-      .setDesc("MVP default is 40. Higher values cost more and take longer.")
+      .setDesc("The default is 40. Higher values cost more and take longer.")
       .addSlider((slider) => slider
         .setLimits(10, 120, 5)
         .setDynamicTooltip()
@@ -865,6 +1863,28 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
         }));
 
     new Setting(containerEl)
+      .setName("Glossary explanation length")
+      .setDesc("Controls newly generated glossary entries. Standard stores a fuller contextual definition plus cluster notes. Concise stores a 30-50 word definition plus cluster notes. Rebuild glossary entries to refresh existing cache.")
+      .addDropdown((dropdown) => dropdown
+        .addOption("standard", "Standard (current)")
+        .addOption("brief", "Concise (30-50 words)")
+        .setValue(this.plugin.settings.glossaryExplanationLength)
+        .onChange(async (value) => {
+          this.plugin.settings.glossaryExplanationLength = value === "brief" ? "brief" : "standard";
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName("Enable sep enrichment")
+      .setDesc("After glossary entries are prepared, fetch matching Stanford encyclopedia introductions and cache a short supplement for hover.")
+      .addToggle((toggle) => toggle
+        .setValue(this.plugin.settings.sepEnrichmentEnabled)
+        .onChange(async (value) => {
+          this.plugin.settings.sepEnrichmentEnabled = value;
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
       .setName("Hover delay")
       .setDesc("Milliseconds before the hover tooltip appears. Reload Obsidian after changing this.")
       .addSlider((slider) => slider
@@ -878,162 +1898,36 @@ class PhilosophyReaderSettingTab extends PluginSettingTab {
   }
 }
 
-interface ExtractedPdfPage {
-  pageNumber: number;
-  text: string;
-  charCount: number;
+function buildGlossaryReadyNotice(completed: number, sepSummary: SepEnrichmentSummary | null): string {
+  const base = `Glossary prepared: ${completed} new term${completed === 1 ? "" : "s"}.`;
+  if (!sepSummary || sepSummary.attempted === 0) {
+    return base;
+  }
+  return `${base} SEP matched ${sepSummary.matched}/${sepSummary.attempted}.`;
 }
 
-interface ExtractedPdfText {
-  backend: "pdfjs";
-  extractedAt: string;
-  numPages: number;
-  totalChars: number;
-  pages: ExtractedPdfPage[];
+function buildPreparedTermNotice(term: string, sepSummary: SepEnrichmentSummary | null): string {
+  const base = `Prepared glossary entry: ${term}`;
+  if (!sepSummary || sepSummary.attempted === 0) {
+    return base;
+  }
+  if (sepSummary.matched > 0) {
+    return `${base}. SEP summary cached.`;
+  }
+  if (sepSummary.notFound > 0) {
+    return `${base}. No SEP entry matched.`;
+  }
+  if (sepSummary.failed > 0) {
+    return `${base}. SEP enrichment failed.`;
+  }
+  return base;
 }
 
-async function extractPdfTextWithPdfJs(pdfAbsPath: string): Promise<ExtractedPdfText> {
-  const globalObject = globalThis as typeof globalThis & { pdfjsWorker?: unknown };
-  const previousPdfWorker = globalObject.pdfjsWorker;
-  const hadPdfWorker = Object.prototype.hasOwnProperty.call(globalObject, "pdfjsWorker");
-
-  try {
-    await import("pdfjs-dist/legacy/build/pdf.worker.mjs");
-    const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs") as {
-      getDocument: (options: Record<string, unknown>) => { promise: Promise<{
-        numPages: number;
-        getPage: (pageNumber: number) => Promise<{ getTextContent: () => Promise<{ items: unknown[] }> }>;
-        destroy?: () => Promise<void>;
-      }> };
-    };
-    const data = new Uint8Array(fs.readFileSync(pdfAbsPath));
-    const loadingTask = pdfjs.getDocument({
-      data,
-      useSystemFonts: true,
-      isEvalSupported: false
-    });
-    const pdf = await loadingTask.promise;
-    const pages: ExtractedPdfPage[] = [];
-
-    try {
-      for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
-        const page = await pdf.getPage(pageNumber);
-        const textContent = await page.getTextContent();
-        const text = textContentToPageText(textContent.items);
-        pages.push({
-          pageNumber,
-          text,
-          charCount: text.replace(/\s/g, "").length
-        });
-      }
-    } finally {
-      if (pdf.destroy) {
-        await pdf.destroy();
-      }
-    }
-
-    return {
-      backend: "pdfjs",
-      extractedAt: new Date().toISOString(),
-      numPages: pdf.numPages,
-      totalChars: pages.reduce((sum, page) => sum + page.charCount, 0),
-      pages
-    };
-  } finally {
-    if (hadPdfWorker) {
-      globalObject.pdfjsWorker = previousPdfWorker;
-    } else {
-      delete globalObject.pdfjsWorker;
-    }
+function buildSepNotice(summary: SepEnrichmentSummary): string {
+  if (summary.attempted === 0) {
+    return "SEP enrichment is already cached for the selected glossary entries.";
   }
-}
-
-function textContentToPageText(items: unknown[]): string {
-  const lines: string[] = [];
-  let currentLine = "";
-
-  for (const rawItem of items) {
-    const item = rawItem as { str?: unknown; hasEOL?: unknown };
-    const text = typeof item.str === "string" ? item.str.normalize("NFKC") : "";
-    if (text) {
-      currentLine += text;
-    }
-    if (item.hasEOL === true) {
-      lines.push(cleanPdfLine(currentLine));
-      currentLine = "";
-    }
-  }
-
-  if (currentLine.trim()) {
-    lines.push(cleanPdfLine(currentLine));
-  }
-
-  return collapseBlankLines(lines).join("\n");
-}
-
-function buildMarkdownFromExtractedPdfText(extracted: ExtractedPdfText, title: string): string {
-  const sections = [`# ${title}`];
-  for (const page of extracted.pages) {
-    const markdown = pageTextToMarkdown(page.text);
-    sections.push(`<!-- page: ${page.pageNumber} -->${markdown ? `\n\n${markdown}` : ""}`);
-  }
-  return `${sections.join("\n\n").trim()}\n`;
-}
-
-function pageTextToMarkdown(pageText: string): string {
-  const paragraphs: string[] = [];
-  let current = "";
-
-  const flush = () => {
-    const paragraph = current.trim();
-    if (paragraph) {
-      paragraphs.push(paragraph);
-    }
-    current = "";
-  };
-
-  for (const line of pageText.split(/\n/)) {
-    const cleaned = cleanPdfLine(line);
-    if (!cleaned) {
-      flush();
-      continue;
-    }
-
-    if (!current) {
-      current = cleaned;
-    } else if (current.endsWith("-") && !current.endsWith("--")) {
-      current = `${current.slice(0, -1)}${cleaned}`;
-    } else {
-      current = `${current} ${cleaned}`;
-    }
-  }
-
-  flush();
-  return paragraphs.join("\n\n");
-}
-
-function cleanPdfLine(line: string): string {
-  return line
-    .replace(/\u0000/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function collapseBlankLines(lines: string[]): string[] {
-  const output: string[] = [];
-  for (const line of lines) {
-    if (!line) {
-      if (output.length > 0 && output[output.length - 1] !== "") {
-        output.push("");
-      }
-      continue;
-    }
-    output.push(line);
-  }
-  while (output.length > 0 && output[output.length - 1] === "") {
-    output.pop();
-  }
-  return output;
+  return `SEP enrichment complete: ${summary.matched} matched, ${summary.notFound} not found, ${summary.failed} failed, ${summary.skipped} skipped.`;
 }
 
 function joinVaultPath(...parts: string[]): string {
@@ -1054,6 +1948,54 @@ function buildImportedPaperMarkdown(markdown: string, metadata: { title: string;
   return `${frontmatter}${content}\n`;
 }
 
+function buildImportWarningsMarkdown(backend: string, sourcePdfPath: string, quality: MarkdownQualityReport): string {
+  const lines = [
+    "---",
+    `backend: ${JSON.stringify(backend)}`,
+    `source_pdf: ${JSON.stringify(sourcePdfPath)}`,
+    `risk_level: ${JSON.stringify(quality.riskLevel)}`,
+    `risk_score: ${quality.riskScore}`,
+    `updated: ${JSON.stringify(new Date().toISOString())}`,
+    "---",
+    "",
+    "# PDF import warnings",
+    "",
+    `Backend: ${backend}`,
+    `Source PDF: [[${sourcePdfPath}]]`,
+    `Risk: ${quality.riskLevel} (${quality.riskScore})`,
+    "",
+    "## Counters",
+    "",
+    `- CID placeholders: ${quality.cidRefs}`,
+    `- Boxed formula marks: ${quality.boxedFormulaMarks}`,
+    `- Control characters: ${quality.controlChars}`,
+    `- Encoding anomalies: ${quality.mojibakeMarks + quality.replacementChars}`,
+    `- Suspicious formula marks: ${quality.suspiciousFormulaMarks}`,
+    `- Long unspaced alphabetic runs: ${quality.longAlphaRuns}`,
+    `- Markdown table-like lines: ${quality.markdownTableLines}`,
+    "",
+    "## Warnings",
+    ""
+  ];
+
+  if (quality.warnings.length === 0) {
+    lines.push("- No automatic warnings.");
+  } else {
+    lines.push(...quality.warnings.map((warning) => `- ${warning}`));
+  }
+
+  lines.push(
+    "",
+    "## Interpretation",
+    "",
+    "- Ordinary prose may still be readable when risk is medium or high.",
+    "- Do not trust formulas until CID placeholders, modal boxes, arrows, Greek letters, and subscripts have been spot-checked.",
+    "- The next fallback stage should target only risky pages or formula regions, not OCR the whole PDF by default.",
+    ""
+  );
+  return `${lines.join("\n")}\n`;
+}
+
 function findLargestMarkdownFile(folder: string): string | null {
   const files: string[] = [];
   const visit = (current: string) => {
@@ -1071,12 +2013,78 @@ function findLargestMarkdownFile(folder: string): string | null {
     .sort((a, b) => fs.statSync(b).size - fs.statSync(a).size)[0] || null;
 }
 
+function looksLikeLocalPath(command: string): boolean {
+  return command.includes("/") || command.includes("\\") || command.startsWith(`.${path.sep}`) || command.startsWith("~/") || command.startsWith("~\\");
+}
+
+function resolveConfiguredToolCommand(configured: string, executableBaseName: string): string {
+  const expanded = expandUserHome(configured);
+  if (!looksLikeLocalPath(expanded) || !fs.existsSync(expanded)) {
+    return expanded;
+  }
+
+  const stat = fs.statSync(expanded);
+  if (!stat.isDirectory()) {
+    return expanded;
+  }
+
+  const candidates = [
+    path.join(expanded, "bin", executableBaseName),
+    path.join(expanded, "Scripts", `${executableBaseName}.exe`),
+    path.join(expanded, "Scripts", executableBaseName),
+    path.join(expanded, "bin", `${executableBaseName}.exe`)
+  ];
+  return candidates.find((candidate) => fs.existsSync(candidate)) || expanded;
+}
+
+function expandUserHome(inputPath: string): string {
+  if (!inputPath.startsWith("~")) {
+    return inputPath;
+  }
+
+  const homeDir = process.env.HOME || process.env.USERPROFILE;
+  if (!homeDir) {
+    return inputPath;
+  }
+
+  if (inputPath === "~") {
+    return homeDir;
+  }
+
+  if (inputPath.startsWith("~/") || inputPath.startsWith("~\\")) {
+    return path.join(homeDir, inputPath.slice(2));
+  }
+
+  return inputPath;
+}
+
+function getReadingModel(settings: PhilosophyReaderSettings): string {
+  if (settings.provider === "anthropic") {
+    return settings.anthropicModel.trim() || DEFAULT_SETTINGS.anthropicModel;
+  }
+  return settings.openaiModel.trim() || DEFAULT_SETTINGS.openaiModel;
+}
+
+function isOpenAIModel(model: string): boolean {
+  return /^(gpt-|o1-|o3-|o4-)/.test(String(model || "").trim());
+}
+
 function chunk<T>(items: T[], size: number): T[][] {
   const chunks: T[][] = [];
   for (let index = 0; index < items.length; index += size) {
     chunks.push(items.slice(index, index + size));
   }
   return chunks;
+}
+
+function findSelectedKeySentence(paragraphs: KeySentenceParagraph[], paragraphId: string, sentenceId: string): SentenceSpan | null {
+  for (const paragraph of paragraphs) {
+    if (paragraph.id !== paragraphId) {
+      continue;
+    }
+    return paragraph.sentences.find((sentence) => sentence.id === sentenceId) || null;
+  }
+  return null;
 }
 
 function findMatchingInput(inputs: ExplainTermInput[], explanation: ExplainedTerm): ExplainTermInput | null {

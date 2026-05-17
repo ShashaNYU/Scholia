@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "paper2mdviallm"
+version = "0.1.0"
+description = "LLM-native academic PDF to Obsidian Markdown converter."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "s1n4sh4" }]
+keywords = ["pdf", "markdown", "obsidian", "llm", "academic"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Text Processing :: Markup :: Markdown",
+  "Topic :: Utilities"
+]
+dependencies = [
+  "anthropic>=0.40.0",
+  "openai>=1.0.0",
+  "PyMuPDF>=1.24.0",
+  "pydantic>=2.0",
+  "python-dotenv>=1.0.0",
+  "tenacity>=8.0.0",
+  "rich>=13.0.0",
+  "typer>=0.12.0"
+]
+
+[project.scripts]
+paper2mdviallm = "paper2mdviallm.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["paper2mdviallm*"]

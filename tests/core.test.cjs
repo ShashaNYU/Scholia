@@ -2,8 +2,11 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const {
+  analyzeMarkdownQuality,
+  applySentenceHighlights,
   buildContextClusters,
   buildGlossaryMarkdown,
+  buildKeySentenceParagraphs,
   buildParagraphWindows,
   chooseClusterForOffset,
   findPreparedTermAtPosition,
@@ -14,7 +17,9 @@ const {
   parseGlossaryMarkdown,
   parseJsonFromText,
   parseLooseJsonFromText,
+  removeManagedSentenceHighlights,
   slugify,
+  splitParagraphSentences,
   splitParagraphs
 } = require("../src/core.js");
 
@@ -53,6 +58,7 @@ test("buildParagraphWindows uses overlap", () => {
     index,
     start: index * 10,
     end: index * 10 + 5,
+    raw: `Paragraph ${index}`,
     text: `Paragraph ${index} has enough content to be included.`,
     heading: ""
   }));
@@ -86,6 +92,13 @@ test("findTermOccurrences respects word boundaries", () => {
   assert.equal(occurrences[1].text, "idealism");
 });
 
+test("findTermOccurrences still matches terms inside sentence highlights", () => {
+  const markdown = "==Transcendental idealism== frames the opening move. A later sentence reuses transcendental idealism.";
+  const occurrences = findTermOccurrences(markdown, "transcendental idealism", []);
+
+  assert.equal(occurrences.length, 2);
+});
+
 test("buildContextClusters groups occurrences by heading", () => {
   const markdown = [
     "# First",
@@ -109,6 +122,37 @@ test("buildContextClusters groups occurrences by heading", () => {
   assert.equal(clusters[1].label, "Second");
 });
 
+test("splitParagraphSentences produces stable sentence ids and offsets", () => {
+  const markdown = [
+    "# Section One",
+    "",
+    "The first sentence introduces the central claim. The second sentence sharpens the objection. The third sentence resolves the tension."
+  ].join("\n");
+
+  const paragraph = splitParagraphs(markdown)[0];
+  const sentences = splitParagraphSentences(markdown, paragraph);
+
+  assert.equal(sentences.length, 3);
+  assert.equal(sentences[0].id, "p-0-s-1");
+  assert.equal(sentences[1].id, "p-0-s-2");
+  assert.equal(markdown.slice(sentences[1].startOffset, sentences[1].endOffset), "The second sentence sharpens the objection.");
+});
+
+test("buildKeySentenceParagraphs skips single-sentence and short paragraphs", () => {
+  const markdown = [
+    "This paragraph is long enough to count but it still has only one sentence and should be skipped.",
+    "",
+    "A longer paragraph opens with a claim about practical reason. A second sentence develops the argumentative stakes for the reader."
+  ].join("\n");
+
+  const paragraphs = splitParagraphs(markdown);
+  const candidates = buildKeySentenceParagraphs(markdown, paragraphs, 40);
+
+  assert.equal(candidates.length, 1);
+  assert.equal(candidates[0].paragraphIndex, 1);
+  assert.equal(candidates[0].sentences.length, 2);
+});
+
 test("glossary markdown round-trips cache metadata", () => {
   const markdown = buildGlossaryMarkdown({
     term: "Transcendental Idealism",
@@ -119,9 +163,17 @@ test("glossary markdown round-trips cache metadata", () => {
     model: "gpt-5.4-mini",
     created: "2026-01-01T00:00:00.000Z",
     updated: "2026-01-01T00:00:00.000Z",
-    firstUse: "Introduced in the opening section.",
     definition: "A context-aware definition.",
-    authorUsage: "The author uses it as a local contrast class.",
+    sep: {
+      status: "matched",
+      query: "transcendental idealism",
+      entryTitle: "Transcendental Idealism",
+      entryUrl: "https://plato.stanford.edu/entries/transcendental-idealism/",
+      summary: "A short SEP supplement.",
+      sourceExcerpt: "A longer source excerpt.",
+      revised: "2026-01-21",
+      fetchedAt: "2026-01-02T00:00:00.000Z"
+    },
     clusters: [{
       id: "cluster-1",
       label: "First",
@@ -136,7 +188,114 @@ test("glossary markdown round-trips cache metadata", () => {
   const parsed = parseGlossaryMarkdown(markdown);
   assert.equal(parsed.term, "Transcendental Idealism");
   assert.equal(parsed.definition, "A context-aware definition.");
+  assert.equal(parsed.sep.status, "matched");
+  assert.equal(parsed.sep.entryUrl, "https://plato.stanford.edu/entries/transcendental-idealism/");
   assert.equal(parsed.clusters[0].usageNote, "It frames the local argument.");
+  assert.match(markdown, /## SEP/);
+});
+
+test("legacy glossary markdown still parses without exposing removed fields", () => {
+  const markdown = `---
+term: "Transcendental Idealism"
+normalizedTerm: "transcendental idealism"
+aliases: ["TI"]
+sourcePaper: "paper/example.md"
+provider: "openai"
+model: "gpt-5.4-mini"
+created: "2026-01-01T00:00:00.000Z"
+updated: "2026-01-01T00:00:00.000Z"
+firstUse: "Introduced in the opening section."
+definition: "A context-aware definition."
+authorUsage: "The author uses it as a local contrast class."
+sep_enabled: false
+clusters: [{"id":"cluster-1","label":"First","paragraphIndexes":[0],"startOffset":10,"endOffset":80,"excerpt":"Excerpt","usageNote":"It frames the local argument."}]
+---
+
+# Transcendental Idealism
+
+A context-aware definition.
+
+## Author usage
+
+The author uses it as a local contrast class.
+
+## First use
+
+Introduced in the opening section.
+
+## Usage notes
+
+### First
+
+It frames the local argument.
+`;
+
+  const parsed = parseGlossaryMarkdown(markdown);
+  assert.equal(parsed.term, "Transcendental Idealism");
+  assert.equal(parsed.definition, "A context-aware definition.");
+  assert.equal(parsed.clusters[0].usageNote, "It frames the local argument.");
+  assert.equal("authorUsage" in parsed, false);
+  assert.equal("firstUse" in parsed, false);
+});
+
+test("glossary markdown records SEP cache failures without breaking parse", () => {
+  const markdown = buildGlossaryMarkdown({
+    term: "Epistemic Luck",
+    normalizedTerm: "epistemic luck",
+    aliases: [],
+    sourcePaper: "paper/example.md",
+    provider: "openai",
+    model: "gpt-5.4-mini",
+    created: "2026-01-01T00:00:00.000Z",
+    updated: "2026-01-01T00:00:00.000Z",
+    definition: "A local definition.",
+    sep: {
+      status: "failed",
+      query: "epistemic luck",
+      entryTitle: "",
+      entryUrl: "",
+      summary: "",
+      sourceExcerpt: "",
+      revised: "",
+      fetchedAt: "2026-01-02T00:00:00.000Z",
+      error: "Timed out"
+    },
+    clusters: []
+  });
+
+  const parsed = parseGlossaryMarkdown(markdown);
+  assert.equal(parsed.sep.status, "failed");
+  assert.equal(parsed.sep.error, "Timed out");
+  assert.match(markdown, /SEP enrichment failed/);
+});
+
+test("applySentenceHighlights is idempotent for the same sentence", () => {
+  const markdown = "The first sentence frames the issue. The second sentence states the decisive claim. The third sentence applies it.";
+  const paragraph = splitParagraphs(markdown)[0];
+  const sentence = splitParagraphSentences(markdown, paragraph)[1];
+
+  const highlighted = applySentenceHighlights(markdown, [sentence]);
+  assert.equal(highlighted, "The first sentence frames the issue. ==The second sentence states the decisive claim.== The third sentence applies it.");
+  assert.equal(applySentenceHighlights(highlighted, [sentence]), highlighted);
+});
+
+test("removeManagedSentenceHighlights removes only targeted highlights", () => {
+  const markdown = "==The first sentence states the main claim.== The second sentence remains plain. ==The third sentence was highlighted manually.==";
+  const cleaned = removeManagedSentenceHighlights(markdown, [
+    {
+      paragraphIndex: 0,
+      text: "The first sentence states the main claim."
+    }
+  ]);
+
+  assert.equal(cleaned, "The first sentence states the main claim. The second sentence remains plain. ==The third sentence was highlighted manually.==");
+});
+
+test("splitParagraphs strips sentence highlight markup from paragraph text", () => {
+  const markdown = "==Transcendental idealism== structures the opening claim. A later sentence extends the same contrast.";
+  const paragraphs = splitParagraphs(markdown);
+
+  assert.equal(paragraphs[0].text, "Transcendental idealism structures the opening claim. A later sentence extends the same contrast.");
 });
 
 test("findPreparedTermAtPosition prefers longest matching term", () => {
@@ -149,9 +308,7 @@ test("findPreparedTermAtPosition prefers longest matching term", () => {
     model: "gpt-5.4-mini",
     created: "",
     updated: "",
-    firstUse: "",
     definition: "Definition",
-    authorUsage: "",
     clusters: []
   }));
   const line = "Kant's transcendental idealism matters here.";
@@ -180,12 +337,12 @@ test("parseLooseJsonFromText repairs bare quotes inside string values", () => {
   const parsed = parseLooseJsonFromText(`[
     {
       "term": "metalinguistic negotiation",
-      "firstUse": "The paper describes a "metalinguistic" use of a term.",
+      "definition": "The paper describes a "metalinguistic" use of a term.",
       "clusters": []
     }
   ]`);
 
-  assert.equal(parsed[0].firstUse, "The paper describes a \"metalinguistic\" use of a term.");
+  assert.equal(parsed[0].definition, "The paper describes a \"metalinguistic\" use of a term.");
 });
 
 test("findWordAtPosition ignores short words", () => {
@@ -195,4 +352,12 @@ test("findWordAtPosition ignores short words", () => {
     from: 4,
     to: 11
   });
+});
+
+test("analyzeMarkdownQuality flags formula extraction failures", () => {
+  const report = analyzeMarkdownQuality("The K axiom: (cid:3)(φ→ψ) and $\\boxed { \\phi }$");
+  assert.equal(report.cidRefs, 1);
+  assert.equal(report.boxedFormulaMarks, 1);
+  assert.ok(report.suspiciousFormulaMarks >= 2);
+  assert.notEqual(report.riskLevel, "ok");
 });
